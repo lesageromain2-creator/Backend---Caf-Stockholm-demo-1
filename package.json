@@ -1,7 +1,7 @@
 {
   "name": "restaurant-backend",
-  "version": "1.0.0",
-  "description": "Backend sécurisé pour application restaurant avec authentification",
+  "version": "2.0.0",
+  "description": "Backend sécurisé pour application restaurant avec JWT",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,6 +11,7 @@
   "keywords": [
     "restaurant",
     "api",
+    "jwt",
     "authentication",
     "supabase",
     "postgresql"
@@ -20,8 +21,6 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.90.0",
     "bcrypt": "^5.1.1",
-    "bcryptjs": "^3.0.3",
-    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
@@ -29,7 +28,7 @@
     "helmet": "^7.2.0",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.16.3",
-    "styled-jsx": "^5.1.7"
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

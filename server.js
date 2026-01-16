@@ -1,8 +1,6 @@
-// backend/server.js - CONFIGURATION CORRIGÉE POUR MOBILE
+// backend/server.js - VERSION JWT COMPLÈTE (SANS SESSIONS)
 require('dotenv').config();
 const express = require('express');
-const session = require('express-session');
-const pgSession = require('connect-pg-simple')(session);
 const { Pool } = require('pg');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -27,13 +25,13 @@ const PORT = process.env.PORT || 5000;
 app.set('trust proxy', 1);
 
 // ============================================
-// CONFIGURATION CORS - VERSION CORRIGÉE
+// CONFIGURATION CORS - VERSION JWT
 // ============================================
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
   : ['http://localhost:3000'];
 
-// Ajouter tous les domaines Vercel possibles
+// Patterns pour Vercel et localhost
 const allowedPatterns = [
   /^https:\/\/restaurant-frontend.*\.vercel\.app$/,
   /^http:\/\/localhost:\d+$/,
@@ -47,7 +45,7 @@ app.use(cors({
   origin: function (origin, callback) {
     console.log('🔍 CORS - Origin reçue:', origin);
     
-    // Autoriser requêtes sans origin (Postman, etc.)
+    // Autoriser requêtes sans origin (Postman, mobile apps)
     if (!origin) {
       console.log('✅ CORS - Requête sans origin autorisée');
       return callback(null, true);
@@ -69,10 +67,10 @@ app.use(cors({
     console.log('❌ CORS - Origin refusée:', origin);
     return callback(null, false);
   },
-  credentials: true, // ⚠️ CRITIQUE pour les cookies
+  credentials: true, // Permet l'envoi du header Authorization
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
-  exposedHeaders: ['Set-Cookie'],
+  exposedHeaders: ['Authorization'],
   maxAge: 86400,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -151,81 +149,14 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ============================================
-// CONFIGURATION SESSION - VERSION CORRIGÉE POUR MOBILE
-// ============================================
-
-const isProduction = process.env.NODE_ENV === 'production';
-
-const sessionConfig = {
-  store: new pgSession({
-    pool: pool,
-    tableName: 'sessions',
-    createTableIfMissing: true,
-    pruneSessionInterval: 60 * 15 // Nettoyer toutes les 15 minutes
-  }),
-  secret: process.env.SESSION_SECRET || 'dev-secret-change-in-production',
-  resave: false,
-  saveUninitialized: false,
-  name: process.env.SESSION_COOKIE_NAME || 'restaurant_session',
-  cookie: {
-    maxAge: parseInt(process.env.SESSION_MAX_AGE) || 24 * 60 * 60 * 1000, // 24h
-    httpOnly: true, // Sécurité XSS
-    secure: isProduction, // HTTPS en production
-    sameSite: isProduction ? 'none' : 'lax', // ⚠️ CRITIQUE pour cross-domain
-    domain: process.env.SESSION_COOKIE_DOMAIN || undefined, // Auto-detect
-    path: '/'
-  },
-  rolling: true, // Renouveler à chaque requête
-  proxy: true // ⚠️ CRITIQUE pour Render
-};
-
-console.log('🍪 SESSION CONFIG:');
-console.log('  - Environment:', process.env.NODE_ENV);
-console.log('  - Cookie Name:', sessionConfig.name);
-console.log('  - Secure:', sessionConfig.cookie.secure);
-console.log('  - SameSite:', sessionConfig.cookie.sameSite);
-console.log('  - HttpOnly:', sessionConfig.cookie.httpOnly);
-console.log('  - Domain:', sessionConfig.cookie.domain || 'auto-detect');
-console.log('  - MaxAge:', sessionConfig.cookie.maxAge / 1000 / 60, 'minutes');
-console.log('  - Proxy:', sessionConfig.proxy);
-
-app.use(session(sessionConfig));
-
-// ============================================
-// MIDDLEWARE DE DEBUG SESSION
+// MIDDLEWARE DE LOGGING JWT
 // ============================================
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString().substring(11, 19);
   
   console.log(`[${timestamp}] ${req.method} ${req.path}`);
   console.log('  📍 Origin:', req.headers.origin || 'none');
-  console.log('  🔒 Protocol:', req.protocol);
-  console.log('  🌐 Secure:', req.secure);
-  console.log('  🍪 SessionID:', req.sessionID ? req.sessionID.substring(0, 8) + '...' : 'none');
-  console.log('  👤 UserId:', req.session?.userId || 'none');
-  
-  if (req.headers.cookie) {
-    console.log('  📦 Cookies reçus:', req.headers.cookie.substring(0, 50) + '...');
-  }
-  
-  next();
-});
-
-// ============================================
-// MIDDLEWARE DE LOGGING
-// ============================================
-app.use((req, res, next) => {
-  const originalSend = res.send;
-  
-  res.send = function(data) {
-    // Logger les cookies envoyés
-    const setCookie = res.getHeader('Set-Cookie');
-    if (setCookie) {
-      console.log('  ✉️ Set-Cookie envoyé:', JSON.stringify(setCookie).substring(0, 100));
-    }
-    
-    originalSend.call(this, data);
-  };
+  console.log('  🔑 Authorization:', req.headers.authorization ? 'Bearer ***' : 'none');
   
   next();
 });
@@ -237,16 +168,11 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'API Restaurant - Serveur opérationnel',
+    message: 'API Restaurant - JWT Auth',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    session: {
-      configured: true,
-      secure: sessionConfig.cookie.secure,
-      sameSite: sessionConfig.cookie.sameSite,
-      httpOnly: sessionConfig.cookie.httpOnly,
-      domain: sessionConfig.cookie.domain || 'auto-detect'
-    }
+    auth: 'JWT',
+    version: '2.0.0'
   });
 });
 
@@ -255,24 +181,20 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
-    session: req.session?.userId ? 'active' : 'none',
+    auth: 'JWT',
     database: 'connected'
   });
 });
 
-// Test de session
-app.get('/test-session', (req, res) => {
-  if (!req.session.views) {
-    req.session.views = 0;
-  }
-  req.session.views++;
-  
+// Test JWT (protégé)
+app.get('/test-jwt', require('./middleware/auths').requireAuth, (req, res) => {
   res.json({
-    message: 'Session test',
-    sessionID: req.sessionID,
-    views: req.session.views,
-    userId: req.session.userId || null,
-    cookie: req.session.cookie
+    message: 'JWT valide',
+    user: {
+      id: req.userId,
+      email: req.userEmail,
+      role: req.userRole
+    }
   });
 });
 
@@ -305,6 +227,7 @@ app.use((err, req, res, next) => {
   console.error('❌ Erreur serveur:', err);
   console.error('Stack:', err.stack);
   
+  const isProduction = process.env.NODE_ENV === 'production';
   const errorMessage = isProduction 
     ? 'Erreur serveur interne' 
     : err.message;
@@ -324,9 +247,10 @@ app.use((err, req, res, next) => {
 const server = app.listen(PORT, () => {
   console.log('');
   console.log('╔══════════════════════════════════════╗');
-  console.log(`║  🚀 Serveur démarré sur port ${PORT}   ║`);
+  console.log(`║  🚀 Serveur démarré (JWT MODE)       ║`);
+  console.log(`║  📍 Port: ${PORT}                      ║`);
   console.log(`║  🌍 Environment: ${(process.env.NODE_ENV || 'development').padEnd(17)}║`);
-  console.log(`║  🔗 URL: http://localhost:${PORT}       ║`);
+  console.log(`║  🔐 Auth: JWT Tokens                 ║`);
   console.log('╚══════════════════════════════════════╝');
   console.log('');
 });
