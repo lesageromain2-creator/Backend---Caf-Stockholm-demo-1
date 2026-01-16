@@ -1,25 +1,10 @@
-// backend/routes/users.js
+// backend/routes/users.js - VERSION JWT
 const express = require('express');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt'); // ✅ UTILISER bcrypt (pas bcryptjs)
 const { query, queryOne } = require('../database/db');
+const { requireAuth, requireAdmin } = require('../middleware/auths'); // ✅ Import JWT middleware
 
 const router = express.Router();
-
-// Middleware pour vérifier l'authentification
-const requireAuth = (req, res, next) => {
-  if (!req.session.userId) {
-    return res.status(401).json({ error: 'Non authentifié' });
-  }
-  next();
-};
-
-// Middleware pour vérifier que l'utilisateur est admin
-const requireAdmin = (req, res, next) => {
-  if (!req.session.userId || req.session.role !== 'admin') {
-    return res.status(403).json({ error: 'Accès refusé - Admin requis' });
-  }
-  next();
-};
 
 // ============================================
 // RÉCUPÉRER LE PROFIL DE L'UTILISATEUR CONNECTÉ
@@ -30,7 +15,7 @@ router.get('/me', requireAuth, async (req, res) => {
       `SELECT id, email, firstname, lastname, phone, role, 
               email_verified, avatar_url, created_at, last_login
        FROM users WHERE id = $1`,
-      [req.session.userId]
+      [req.userId] // ✅ JWT: req.userId au lieu de req.session.userId
     );
 
     if (!user) {
@@ -51,7 +36,7 @@ router.get('/profile', requireAuth, async (req, res) => {
       `SELECT id, email, firstname, lastname, phone, role, 
               email_verified, avatar_url, created_at, last_login
        FROM users WHERE id = $1`,
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     if (!user) {
@@ -83,12 +68,12 @@ router.put('/me', requireAuth, async (req, res) => {
       `UPDATE users 
        SET firstname = $1, lastname = $2, phone = $3, updated_at = CURRENT_TIMESTAMP
        WHERE id = $4`,
-      [firstname, lastname, phone || null, req.session.userId]
+      [firstname, lastname, phone || null, req.userId] // ✅ JWT
     );
 
     const updatedUser = await queryOne(
       'SELECT id, email, firstname, lastname, phone, role FROM users WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     res.json({
@@ -116,12 +101,12 @@ router.put('/profile', requireAuth, async (req, res) => {
       `UPDATE users 
        SET firstname = $1, lastname = $2, phone = $3, updated_at = CURRENT_TIMESTAMP
        WHERE id = $4`,
-      [firstname, lastname, phone || null, req.session.userId]
+      [firstname, lastname, phone || null, req.userId] // ✅ JWT
     );
 
     const updatedUser = await queryOne(
       'SELECT id, email, firstname, lastname, phone, role FROM users WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     res.json({
@@ -157,7 +142,7 @@ router.put('/me/password', requireAuth, async (req, res) => {
     // Récupérer l'utilisateur
     const user = await queryOne(
       'SELECT id, password_hash FROM users WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     if (!user) {
@@ -177,7 +162,7 @@ router.put('/me/password', requireAuth, async (req, res) => {
     // Mettre à jour le mot de passe
     await query(
       'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [newPasswordHash, req.session.userId]
+      [newPasswordHash, req.userId] // ✅ JWT
     );
 
     res.json({ message: 'Mot de passe changé avec succès' });
@@ -206,7 +191,7 @@ router.put('/password', requireAuth, async (req, res) => {
 
     const user = await queryOne(
       'SELECT id, password_hash FROM users WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     if (!user) {
@@ -223,7 +208,7 @@ router.put('/password', requireAuth, async (req, res) => {
 
     await query(
       'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [newPasswordHash, req.session.userId]
+      [newPasswordHash, req.userId] // ✅ JWT
     );
 
     res.json({ message: 'Mot de passe changé avec succès' });
@@ -249,7 +234,7 @@ router.delete('/me/account', requireAuth, async (req, res) => {
     // Vérifier le mot de passe
     const user = await queryOne(
       'SELECT id, password_hash FROM users WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     if (!user) {
@@ -265,11 +250,8 @@ router.delete('/me/account', requireAuth, async (req, res) => {
     // Désactiver le compte plutôt que de le supprimer
     await query(
       'UPDATE users SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
-
-    // Détruire la session
-    req.session.destroy();
 
     res.json({ message: 'Compte désactivé avec succès' });
   } catch (error) {
@@ -291,7 +273,7 @@ router.delete('/account', requireAuth, async (req, res) => {
 
     const user = await queryOne(
       'SELECT id, password_hash FROM users WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     if (!user) {
@@ -306,10 +288,8 @@ router.delete('/account', requireAuth, async (req, res) => {
 
     await query(
       'UPDATE users SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
-
-    req.session.destroy();
 
     res.json({ message: 'Compte désactivé avec succès' });
   } catch (error) {
@@ -330,7 +310,7 @@ router.get('/stats', requireAuth, async (req, res) => {
         COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_reservations
        FROM reservations
        WHERE user_id = $1`,
-      [req.session.userId]
+      [req.userId] // ✅ JWT
     );
 
     res.json(stats);
@@ -388,7 +368,7 @@ router.get('/:id', requireAdmin, async (req, res) => {
 router.delete('/:id', requireAdmin, async (req, res) => {
   try {
     // Vérifier que l'admin ne se supprime pas lui-même
-    if (req.params.id === req.session.userId) {
+    if (req.params.id === req.userId) { // ✅ JWT
       return res.status(400).json({ 
         error: 'Vous ne pouvez pas supprimer votre propre compte' 
       });
