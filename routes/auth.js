@@ -571,5 +571,71 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// ============================================
+// POST /auth/issue-token-for-session
+// Échange session Better Auth (Google, etc.) → JWT backend
+// Appelé par le frontend Next.js uniquement (avec secret partagé)
+// ============================================
+const BETTER_AUTH_BACKEND_SECRET = process.env.BETTER_AUTH_BACKEND_SECRET || process.env.JWT_SECRET;
+
+router.post('/issue-token-for-session', async (req, res) => {
+  const pool = getPool();
+  const { secret, email, name } = req.body;
+
+  if (!BETTER_AUTH_BACKEND_SECRET || secret !== BETTER_AUTH_BACKEND_SECRET) {
+    return res.status(401).json({ error: 'Non autorisé' });
+  }
+
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ error: 'Email requis' });
+  }
+
+  const emailNorm = email.toLowerCase().trim();
+  const nameParts = (name || '').trim().split(/\s+/);
+  const firstname = nameParts[0] || emailNorm.split('@')[0] || 'Utilisateur';
+  const lastname = nameParts.slice(1).join(' ') || '';
+
+  try {
+    let result = await pool.query(
+      'SELECT id, email, role FROM users WHERE email = $1',
+      [emailNorm]
+    );
+
+    let user;
+    if (result.rows.length === 0) {
+      const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+      const insertResult = await pool.query(
+        `INSERT INTO users (
+          email, password_hash, firstname, lastname, role, is_active, email_verified
+        ) VALUES ($1, $2, $3, $4, 'client', true, true)
+        RETURNING id, email, firstname, lastname, role`,
+        [emailNorm, passwordHash, firstname, lastname]
+      );
+      user = insertResult.rows[0];
+      await pool.query(
+        'INSERT INTO email_preferences (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+        [user.id]
+      );
+    } else {
+      user = result.rows[0];
+    }
+
+    const token = generateToken(user);
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Erreur issue-token-for-session:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 module.exports = router;
 module.exports.requireAuth = requireAuth;

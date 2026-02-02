@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { requireAuth, requireAdmin } = require('../../middleware/auths');
 const { getPool } = require('../../database/db');
+const { sendReservationCancelledEmail } = require('../../utils/emailHelpers');
 
 router.use(requireAuth, requireAdmin);
 
@@ -427,7 +428,19 @@ router.put('/:id', async (req, res) => {
           break;
         case 'cancelled':
           notifTitle = 'Rendez-vous annulé';
-          notifMessage = `Votre rendez-vous du ${new Date(reservation.reservation_date).toLocaleDateString('fr-FR')} a été annulé.`;
+          notifMessage = `Votre rendez-vous du ${new Date(reservation.reservation_date).toLocaleDateString('fr-FR')} à ${reservation.reservation_time?.substring(0, 5)} a été annulé par l'administrateur.`;
+          // Envoyer aussi un email au client
+          try {
+            const userResult = await pool.query(
+              'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+              [reservation.user_id]
+            );
+            if (userResult.rows[0]) {
+              await sendReservationCancelledEmail(reservation, userResult.rows[0]);
+            }
+          } catch (emailErr) {
+            console.error('Erreur envoi email annulation:', emailErr);
+          }
           break;
         case 'completed':
           notifTitle = 'Rendez-vous terminé';
@@ -460,27 +473,56 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// DELETE /admin/reservations/:id - Supprimer une réservation
+// DELETE /admin/reservations/:id - Supprimer une réservation (même logique que client)
 router.delete('/:id', async (req, res) => {
   try {
     const pool = getPool();
     const { id } = req.params;
 
-    // Vérifier que la réservation existe
-    const checkResult = await pool.query('SELECT id FROM reservations WHERE id = $1', [id]);
-    
-    if (checkResult.rows.length === 0) {
+    // Récupérer la réservation pour notifier le client avant suppression
+    const reservationResult = await pool.query(
+      'SELECT * FROM reservations WHERE id = $1',
+      [id]
+    );
+
+    if (reservationResult.rows.length === 0) {
       return res.status(404).json({ error: 'Réservation non trouvée' });
     }
 
+    const reservation = reservationResult.rows[0];
+
+    // Notifier le client avant suppression
+    await pool.query(`
+      INSERT INTO user_notifications (user_id, title, message, type, related_type, related_id)
+      VALUES ($1, $2, $3, 'info', 'reservation', $4)
+    `, [
+      reservation.user_id,
+      'Rendez-vous annulé',
+      `Votre rendez-vous du ${new Date(reservation.reservation_date).toLocaleDateString('fr-FR')} à ${reservation.reservation_time?.substring(0, 5)} a été annulé.`
+    ]);
+
+    // Email au client
+    try {
+      const userResult = await pool.query(
+        'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+        [reservation.user_id]
+      );
+      if (userResult.rows[0]) {
+        await sendReservationCancelledEmail(reservation, userResult.rows[0]);
+      }
+    } catch (emailErr) {
+      console.error('Erreur envoi email annulation:', emailErr);
+    }
+
+    // Suppression (même logique que client)
     await pool.query('DELETE FROM reservations WHERE id = $1', [id]);
 
     await pool.query(`
       INSERT INTO admin_activity_logs (admin_id, action, entity_type, entity_id, description)
-      VALUES ($1, 'delete', 'reservation', $2, 'Suppression définitive')
+      VALUES ($1, 'delete', 'reservation', $2, 'Suppression - client notifié')
     `, [req.userId, id]);
 
-    res.json({ success: true });
+    res.json({ success: true, message: 'Réservation supprimée avec succès' });
 
   } catch (error) {
     console.error('Erreur suppression réservation:', error);

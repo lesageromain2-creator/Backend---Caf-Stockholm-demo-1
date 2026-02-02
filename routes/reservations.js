@@ -235,6 +235,39 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // ============================================
+// SUPPRIMER UNE RÉSERVATION (JWT AUTH - propriétaire uniquement)
+// ============================================
+router.delete('/:id', requireAuth, async (req, res) => {
+  const pool = req.app.locals.pool;
+  const userId = req.userId;
+
+  try {
+    const reservation = await queryOne(pool,
+      'SELECT * FROM reservations WHERE id = $1',
+      [req.params.id]
+    );
+
+    if (!reservation) {
+      return res.status(404).json({ error: 'Réservation non trouvée' });
+    }
+
+    if (reservation.user_id !== userId) {
+      return res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres réservations' });
+    }
+
+    await pool.query('DELETE FROM reservations WHERE id = $1', [req.params.id]);
+
+    res.json({
+      success: true,
+      message: 'Réservation supprimée avec succès'
+    });
+  } catch (error) {
+    console.error('Erreur suppression réservation:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ============================================
 // ANNULER UNE RÉSERVATION (JWT AUTH)
 // ============================================
 router.put('/:id/cancel', requireAuth, async (req, res) => {

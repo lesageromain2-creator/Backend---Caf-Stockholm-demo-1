@@ -51,5 +51,8 @@ module.exports = {
   initPool,
   query,
   queryOne,
-  getPool
+  getPool,
+  get pool() {
+    return pool;
+  },
 };

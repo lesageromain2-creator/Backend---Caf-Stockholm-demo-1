@@ -412,17 +412,415 @@ const {
   };
   
   // ============================================
+  // 10. EMAIL VERIFICATION
+  // ============================================
+  
+  const emailVerificationEmail = (variables) => {
+    const { firstname, verification_link, expires_in } = variables;
+    
+    const content = `
+      <h1>Vérifiez votre adresse email ✉️</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Merci de vous être inscrit sur LE SAGE DEV ! Pour finaliser votre inscription, veuillez vérifier votre adresse email en cliquant sur le bouton ci-dessous.</p>
+      
+      ${createButton('Vérifier mon email', verification_link)}
+      
+      <div class="info-box" style="background: #e3f2fd; border-left: 4px solid #0066FF; padding: 20px; margin: 20px 0; border-radius: 4px;">
+        <p style="margin: 0; color: #0A0E27;">
+          ⏰ Ce lien expire dans ${expires_in || '24 heures'}.
+        </p>
+      </div>
+      
+      <p style="font-size: 14px; color: #666;">
+        Si vous n'avez pas créé de compte, vous pouvez ignorer cet email en toute sécurité.
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: 'Vérifiez votre email - LE SAGE DEV',
+      preheader: 'Confirmez votre adresse email pour continuer',
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 11. RESERVATION REMINDER
+  // ============================================
+  
+  const reservationReminderEmail = (variables) => {
+    const { firstname, reservation_date, reservation_time, meeting_type, meeting_link } = variables;
+    
+    const meetingTypeLabel = meeting_type === 'visio' ? '🎥 Visioconférence' : '🏢 Présentiel';
+    
+    const content = `
+      <h1>Rappel : Rendez-vous demain ! 🔔</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Nous vous rappelons que votre rendez-vous avec LE SAGE DEV est prévu <strong>demain</strong>.</p>
+      
+      ${createInfoBox([
+        { label: 'Date', value: new Date(reservation_date).toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) },
+        { label: 'Heure', value: reservation_time },
+        { label: 'Type', value: meetingTypeLabel }
+      ])}
+      
+      ${meeting_type === 'visio' && meeting_link ? `
+        ${createButton('Rejoindre la visio', meeting_link)}
+        <p style="font-size: 14px; color: #666;">
+          💡 Vous pouvez vous connecter 5 minutes avant l'heure prévue.
+        </p>
+      ` : ''}
+      
+      <p style="font-size: 14px; color: #666;">
+        <strong>Un empêchement de dernière minute ?</strong><br>
+        Contactez-nous au plus vite : <a href="mailto:contact@lesagedev.com" style="color: #0066FF;">contact@lesagedev.com</a>
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: 'Rappel rendez-vous - LE SAGE DEV',
+      preheader: `Rendez-vous demain à ${reservation_time}`,
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 12. PROJECT STATUS CHANGED
+  // ============================================
+  
+  const projectStatusChangedEmail = (variables) => {
+    const { firstname, project_title, old_status, new_status, project_id } = variables;
+    
+    const statusLabels = {
+      'discovery': '🔍 Découverte',
+      'design': '🎨 Design',
+      'development': '⚙️ Développement',
+      'testing': '🧪 Tests',
+      'launched': '🚀 Lancé',
+      'completed': '✅ Terminé'
+    };
+    
+    const content = `
+      <h1>Changement de statut du projet</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Le statut de votre projet <strong>"${project_title}"</strong> a été mis à jour.</p>
+      
+      ${createInfoBox([
+        { label: 'Ancien statut', value: statusLabels[old_status] || old_status },
+        { label: 'Nouveau statut', value: statusLabels[new_status] || new_status }
+      ])}
+      
+      ${createButton('Voir les détails', `${frontendUrl}/dashboard/projects/${project_id}`)}
+      
+      <p style="font-size: 14px; color: #666;">
+        Consultez votre espace client pour plus d'informations sur cette mise à jour.
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: `Statut projet mis à jour - ${project_title}`,
+      preheader: `Le statut de votre projet est passé à ${statusLabels[new_status]}`,
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 13. PROJECT DELIVERED
+  // ============================================
+  
+  const projectDeliveredEmail = (variables) => {
+    const { firstname, project_title, project_url, project_id } = variables;
+    
+    const content = `
+      <h1>Votre projet est livré ! 🎉</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Excellente nouvelle ! Votre projet <strong>"${project_title}"</strong> est maintenant terminé et livré.</p>
+      
+      ${project_url ? `
+        ${createInfoBox([
+          { label: 'URL du projet', value: `<a href="${project_url}" style="color: #0066FF;">${project_url}</a>` }
+        ])}
+      ` : ''}
+      
+      ${createButton('Voir mon projet', project_url || `${frontendUrl}/dashboard/projects/${project_id}`)}
+      
+      ${createDivider()}
+      
+      <p><strong>Et maintenant ?</strong></p>
+      <ul style="line-height: 1.8; color: #333;">
+        <li>✅ Testez toutes les fonctionnalités</li>
+        <li>💬 Partagez vos retours et commentaires</li>
+        <li>📱 Partagez votre projet sur les réseaux sociaux</li>
+        <li>⭐ Laissez-nous un témoignage (optionnel)</li>
+      </ul>
+      
+      <p style="margin-top: 30px;">
+        Nous restons à votre disposition pour tout support ou évolution future de votre projet.
+      </p>
+      
+      <p style="font-size: 14px; color: #666;">
+        Merci de votre confiance ! 🙏
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: 'Projet livré - LE SAGE DEV',
+      preheader: `Votre projet ${project_title} est prêt !`,
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 14. FILE UPLOADED
+  // ============================================
+  
+  const fileUploadedEmail = (variables) => {
+    const { firstname, project_title, file_name, uploaded_by, project_id } = variables;
+    
+    const content = `
+      <h1>Nouveau fichier ajouté 📎</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Un nouveau fichier a été ajouté au projet <strong>"${project_title}"</strong>.</p>
+      
+      ${createInfoBox([
+        { label: 'Fichier', value: file_name },
+        { label: 'Ajouté par', value: uploaded_by }
+      ])}
+      
+      ${createButton('Consulter le fichier', `${frontendUrl}/dashboard/projects/${project_id}#files`)}
+    `;
+  
+    return generateBaseEmailHTML({
+      title: 'Nouveau fichier - LE SAGE DEV',
+      preheader: `${file_name} a été ajouté au projet`,
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 15. PAYMENT SUCCESS
+  // ============================================
+  
+  const paymentSuccessEmail = (variables) => {
+    const { firstname, amount, currency, payment_date, invoice_url, project_title } = variables;
+    
+    const content = `
+      <h1>Paiement confirmé ! ✅</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Nous confirmons la réception de votre paiement.</p>
+      
+      ${createInfoBox([
+        { label: 'Montant', value: `${amount} ${currency || 'EUR'}` },
+        { label: 'Date', value: new Date(payment_date).toLocaleDateString('fr-FR') },
+        { label: 'Projet', value: project_title || 'N/A' }
+      ])}
+      
+      ${invoice_url ? createButton('Télécharger la facture', invoice_url) : ''}
+      
+      <p style="font-size: 14px; color: #666;">
+        Vous pouvez également retrouver cette facture dans votre espace client.
+      </p>
+      
+      <p style="margin-top: 30px;">
+        Merci pour votre confiance ! 🙏
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: 'Paiement confirmé - LE SAGE DEV',
+      preheader: `Paiement de ${amount} ${currency || 'EUR'} confirmé`,
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 16. PAYMENT FAILED
+  // ============================================
+  
+  const paymentFailedEmail = (variables) => {
+    const { firstname, amount, currency, error_message, payment_link } = variables;
+    
+    const content = `
+      <h1>Échec du paiement ⚠️</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Malheureusement, votre paiement de <strong>${amount} ${currency || 'EUR'}</strong> n'a pas pu être traité.</p>
+      
+      ${error_message ? `
+        <div class="info-box" style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 20px; margin: 20px 0; border-radius: 4px;">
+          <p style="margin: 0; color: #856404;">
+            <strong>Raison :</strong> ${error_message}
+          </p>
+        </div>
+      ` : ''}
+      
+      <p><strong>Que faire ?</strong></p>
+      <ul style="line-height: 1.8; color: #333;">
+        <li>Vérifiez les informations de votre carte bancaire</li>
+        <li>Assurez-vous d'avoir suffisamment de fonds</li>
+        <li>Contactez votre banque si le problème persiste</li>
+      </ul>
+      
+      ${payment_link ? createButton('Réessayer le paiement', payment_link) : ''}
+      
+      <p style="font-size: 14px; color: #666;">
+        Besoin d'aide ? Contactez-nous : <a href="mailto:contact@lesagedev.com" style="color: #0066FF;">contact@lesagedev.com</a>
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: 'Échec du paiement - LE SAGE DEV',
+      preheader: 'Votre paiement n\'a pas pu être traité',
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 17. INVOICE
+  // ============================================
+  
+  const invoiceEmail = (variables) => {
+    const { firstname, invoice_number, amount, currency, due_date, invoice_url, project_title } = variables;
+    
+    const content = `
+      <h1>Nouvelle facture 📄</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <p>Votre facture est disponible.</p>
+      
+      ${createInfoBox([
+        { label: 'Numéro de facture', value: invoice_number },
+        { label: 'Montant', value: `${amount} ${currency || 'EUR'}` },
+        { label: 'Date d\'échéance', value: new Date(due_date).toLocaleDateString('fr-FR') },
+        { label: 'Projet', value: project_title || 'N/A' }
+      ])}
+      
+      ${createButton('Télécharger la facture', invoice_url)}
+      
+      <p style="font-size: 14px; color: #666;">
+        Merci de procéder au paiement avant la date d'échéance.
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: `Facture ${invoice_number} - LE SAGE DEV`,
+      preheader: `Nouvelle facture de ${amount} ${currency || 'EUR'}`,
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 18. NEWSLETTER
+  // ============================================
+  
+  const newsletterEmail = (variables) => {
+    const { firstname, subject, content: newsletterContent } = variables;
+    
+    const content = `
+      <h1>${subject}</h1>
+      
+      <p>Bonjour ${firstname || 'cher abonné'},</p>
+      
+      ${newsletterContent}
+      
+      ${createDivider()}
+      
+      <p style="font-size: 14px; color: #666;">
+        Vous recevez cet email car vous êtes inscrit à la newsletter LE SAGE DEV.
+      </p>
+    `;
+  
+    return generateBaseEmailHTML({
+      title: subject,
+      preheader: subject,
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
+  // 19. NOTIFICATION (Generic)
+  // ============================================
+  
+  const notificationEmail = (variables) => {
+    const { firstname, notification_title, notification_message, action_url, action_label } = variables;
+    
+    const content = `
+      <h1>${notification_title}</h1>
+      
+      <p>Bonjour ${firstname},</p>
+      
+      <div class="info-box" style="background: #e3f2fd; border-left: 4px solid #0066FF; padding: 20px; margin: 20px 0; border-radius: 4px;">
+        <p style="margin: 0; color: #0A0E27;">
+          ${notification_message}
+        </p>
+      </div>
+      
+      ${action_url && action_label ? createButton(action_label, action_url) : ''}
+    `;
+  
+    return generateBaseEmailHTML({
+      title: notification_title,
+      preheader: notification_message.substring(0, 100),
+      content,
+      variables
+    });
+  };
+  
+  // ============================================
   // EXPORTS
   // ============================================
   
   module.exports = {
+    // Auth
     welcomeEmail,
+    emailVerificationEmail,
+    passwordResetEmail,
+    
+    // Reservations
     reservationCreatedEmail,
     reservationConfirmedEmail,
     reservationCancelledEmail,
+    reservationReminderEmail,
+    
+    // Projects
     projectCreatedEmail,
     projectUpdatedEmail,
+    projectStatusChangedEmail,
+    projectDeliveredEmail,
+    
+    // Contact
     contactMessageReceivedEmail,
     contactReplyEmail,
-    passwordResetEmail
+    
+    // Files & Payments
+    fileUploadedEmail,
+    paymentSuccessEmail,
+    paymentFailedEmail,
+    invoiceEmail,
+    
+    // Others
+    newsletterEmail,
+    notificationEmail
   };

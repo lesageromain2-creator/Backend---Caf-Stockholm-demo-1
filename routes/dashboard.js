@@ -332,4 +332,92 @@ router.put('/notifications/:id/read', requireAuth, async (req, res) => {
   }
 });
 
+router.get('/projects', requireAuth, async (req, res) => {
+  const pool = req.app.locals.pool;
+  const userId = req.userId;
+
+  try {
+    const result = await pool.query(`
+      SELECT 
+        p.*,
+        (SELECT COUNT(*) FROM project_files WHERE project_id = p.id) as files_count,
+        (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id AND status = 'completed') as completed_milestones,
+        (SELECT COUNT(*) FROM project_milestones WHERE project_id = p.id) as total_milestones
+      FROM client_projects p
+      WHERE p.user_id = $1
+      ORDER BY p.created_at DESC
+    `, [userId]);
+
+    res.json({ projects: result.rows });
+  } catch (error) {
+    console.error('Erreur récupération projets:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+router.get('/projects/:id', requireAuth, async (req, res) => {
+  const pool = req.app.locals.pool;
+  const userId = req.userId;
+  const { id } = req.params;
+
+  try {
+    // Récupérer le projet
+    const projectResult = await pool.query(`
+      SELECT p.* 
+      FROM client_projects p
+      WHERE p.id = $1 AND p.user_id = $2
+    `, [id, userId]);
+
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Projet non trouvé' });
+    }
+
+    const project = projectResult.rows[0];
+
+    // Récupérer les jalons
+    const milestonesResult = await pool.query(`
+      SELECT * FROM project_milestones
+      WHERE project_id = $1
+      ORDER BY sequence, due_date
+    `, [id]);
+
+    // Récupérer les mises à jour
+    const updatesResult = await pool.query(`
+      SELECT 
+        pu.*,
+        u.firstname,
+        u.lastname
+      FROM project_updates pu
+      LEFT JOIN users u ON pu.created_by = u.id
+      WHERE pu.project_id = $1
+      ORDER BY pu.created_at DESC
+    `, [id]);
+
+    // Récupérer les fichiers (exclure les supprimés)
+    const filesResult = await pool.query(`
+      SELECT 
+        pf.*,
+        u.firstname as uploaded_by_firstname,
+        u.lastname as uploaded_by_lastname
+      FROM project_files pf
+      LEFT JOIN users u ON pf.user_id = u.id
+      WHERE pf.project_id = $1 AND (pf.is_deleted = false OR pf.is_deleted IS NULL)
+      ORDER BY pf.created_at DESC
+    `, [id]);
+
+    res.json({
+      project: {
+        ...project,
+        milestones: milestonesResult.rows,
+        updates: updatesResult.rows,
+        files: filesResult.rows
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur récupération projet:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 module.exports = router;

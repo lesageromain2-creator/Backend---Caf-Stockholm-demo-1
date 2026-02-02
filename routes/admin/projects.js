@@ -3,10 +3,158 @@ const express = require('express');
 const router = express.Router();
 const { requireAuth, requireAdmin } = require('../../middleware/auths');
 const { getPool } = require('../../database/db');
+const { 
+  sendProjectCreatedEmail,
+  sendProjectUpdateEmail 
+} = require('../../utils/emailHelpers');
+const { uploadMiddleware, validateFile } = require('../../middleware/fileUpload');
+const cloudinaryService = require('../../services/cloudinaryService');
+const { FOLDERS } = require('../../config/cloudinary');
+
+
 
 router.use(requireAuth, requireAdmin);
 
+// ============================================
+// POST /admin/projects - Créer un nouveau projet
+// ============================================
+router.post('/', async (req, res) => {
+  const pool = getPool();
+  const {
+    title,
+    description,
+    project_type,
+    status = 'discovery',
+    user_id,
+    start_date,
+    estimated_delivery,
+    total_price,
+    deposit_paid = false,
+    final_paid = false,
+    images = [],
+    send_email = true,
+    email_message = ''
+  } = req.body;
 
+  try {
+    // Validation
+    if (!title || !project_type || !user_id) {
+      return res.status(400).json({ 
+        error: 'Le titre, le type de projet et le client sont requis' 
+      });
+    }
+
+    // Vérifier que le client existe
+    const userResult = await pool.query(
+      'SELECT id, email, firstname, lastname FROM users WHERE id = $1',
+      [user_id]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Client non trouvé' });
+    }
+
+    const client = userResult.rows[0];
+
+    // Créer le projet
+    const projectResult = await pool.query(`
+      INSERT INTO client_projects (
+        user_id, title, description, project_type, status,
+        start_date, estimated_delivery, total_price,
+        deposit_paid, final_paid, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING *
+    `, [
+      user_id, title, description, project_type, status,
+      start_date || null, estimated_delivery || null, total_price || null,
+      deposit_paid, final_paid
+    ]);
+
+    const project = projectResult.rows[0];
+
+    // Ajouter les fichiers/images si fournis
+    if (images && images.length > 0) {
+      for (const image of images) {
+        await pool.query(`
+          INSERT INTO project_files (
+            project_id, user_id, file_name, file_url, file_type, file_size, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+        `, [
+          project.id,
+          req.userId,
+          image.publicId || 'unknown',
+          image.url || image.secure_url,
+          image.format || 'image',
+          image.size || 0
+        ]);
+      }
+    }
+
+    // Créer une notification pour le client
+    await pool.query(`
+      INSERT INTO user_notifications (
+        user_id, title, message, type, related_type, related_id, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+    `, [
+      user_id,
+      'Nouveau projet créé',
+      `Votre projet "${title}" a été créé et est maintenant en cours de préparation.`,
+      'project_created',
+      'project',
+      project.id
+    ]);
+
+    // Envoyer un email au client si demandé
+    if (send_email) {
+      try {
+        await sendProjectCreatedEmail(project, client);
+        
+        // Si un message personnalisé est fourni, l'ajouter comme update
+        if (email_message && email_message.trim()) {
+          await pool.query(`
+            INSERT INTO project_updates (
+              project_id, created_by, title, message, update_type, created_at
+            ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+          `, [
+            project.id,
+            req.userId,
+            'Message de bienvenue',
+            email_message,
+            'welcome'
+          ]);
+        }
+        
+        console.log(`✅ Email de création de projet envoyé à ${client.email}`);
+      } catch (emailError) {
+        console.error('❌ Erreur envoi email création projet:', emailError);
+        // Ne pas bloquer la réponse si l'email échoue
+      }
+    }
+
+    console.log(`✅ Projet créé: ${title} (ID: ${project.id}) pour ${client.email}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Projet créé avec succès',
+      project: {
+        ...project,
+        client: {
+          id: client.id,
+          email: client.email,
+          firstname: client.firstname,
+          lastname: client.lastname
+        },
+        images_count: images.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur création projet:', error);
+    res.status(500).json({ 
+      error: 'Erreur lors de la création du projet' 
+    });
+  }
+});
 
 // ============================================
 // GET /admin/projects - Liste tous les projets
@@ -138,7 +286,7 @@ router.get('/:id', async (req, res) => {
     const milestonesResult = await pool.query(`
       SELECT * FROM project_milestones
       WHERE project_id = $1
-      ORDER BY display_order, target_date
+      ORDER BY sequence, due_date
     `, [id]);
 
     // Récupérer les mises à jour
@@ -366,6 +514,70 @@ router.put('/:id', async (req, res) => {
 });
 
 // ============================================
+// DELETE /admin/projects/:id - Supprimer un projet
+// ============================================
+router.delete('/:id', async (req, res) => {
+  const pool = getPool();
+  const { id } = req.params;
+  
+  try {
+    // Vérifier que le projet existe
+    const projectResult = await pool.query(
+      'SELECT * FROM client_projects WHERE id = $1',
+      [id]
+    );
+    
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Projet non trouvé' });
+    }
+    
+    const project = projectResult.rows[0];
+    
+    // Supprimer dans l'ordre pour respecter les contraintes FK
+    // 1. Supprimer les fichiers
+    await pool.query('DELETE FROM project_files WHERE project_id = $1', [id]);
+    
+    // 2. Supprimer les commentaires
+    await pool.query('DELETE FROM project_comments WHERE project_id = $1', [id]);
+    
+    // 3. Supprimer les tâches
+    await pool.query('DELETE FROM project_tasks WHERE project_id = $1', [id]);
+    
+    // 4. Supprimer les jalons
+    await pool.query('DELETE FROM project_milestones WHERE project_id = $1', [id]);
+    
+    // 5. Supprimer les mises à jour
+    await pool.query('DELETE FROM project_updates WHERE project_id = $1', [id]);
+    
+    // 6. Supprimer les notifications liées
+    await pool.query(
+      "DELETE FROM user_notifications WHERE related_type = 'project' AND related_id = $1",
+      [id]
+    );
+    
+    // 7. Supprimer le projet
+    await pool.query('DELETE FROM client_projects WHERE id = $1', [id]);
+    
+    // Log activité
+    await pool.query(`
+      INSERT INTO admin_activity_logs (admin_id, action, entity_type, entity_id, description, metadata)
+      VALUES ($1, 'delete', 'project', $2, 'Suppression du projet', $3)
+    `, [req.userId, id, JSON.stringify({ title: project.title, user_id: project.user_id })]);
+    
+    console.log(`🗑️ Projet supprimé: ${project.title} (ID: ${id})`);
+    
+    res.json({
+      success: true,
+      message: 'Projet supprimé avec succès'
+    });
+    
+  } catch (error) {
+    console.error('❌ Erreur suppression projet:', error);
+    res.status(500).json({ error: 'Erreur lors de la suppression du projet' });
+  }
+});
+
+// ============================================
 // POST /admin/projects/:id/tasks - Créer une tâche
 // ============================================
 router.post('/:id/tasks', async (req, res) => {
@@ -507,17 +719,18 @@ router.post('/:id/milestones', async (req, res) => {
   try {
     const pool = getPool();
     const { id } = req.params;
-    const { title, description, target_date, display_order } = req.body;
+    // Support des deux noms pour la compatibilité
+    const { title, description, target_date, due_date, display_order, sequence } = req.body;
 
     if (!title) {
       return res.status(400).json({ error: 'Le titre est requis' });
     }
 
     const result = await pool.query(`
-      INSERT INTO project_milestones (project_id, title, description, target_date, display_order)
+      INSERT INTO project_milestones (project_id, title, description, due_date, sequence)
       VALUES ($1, $2, $3, $4, $5)
       RETURNING *
-    `, [id, title, description || null, target_date || null, display_order || 0]);
+    `, [id, title, description || null, due_date || target_date || null, sequence ?? display_order ?? 0]);
 
     res.json({
       success: true,
@@ -537,7 +750,8 @@ router.put('/milestones/:milestoneId', async (req, res) => {
   try {
     const pool = getPool();
     const { milestoneId } = req.params;
-    const { title, description, target_date, is_completed, display_order } = req.body;
+    // Support des deux noms pour la compatibilité
+    const { title, description, target_date, due_date, is_completed, display_order, sequence, status, progress } = req.body;
 
     const updates = [];
     const params = [];
@@ -555,15 +769,30 @@ router.put('/milestones/:milestoneId', async (req, res) => {
       paramCount++;
     }
 
-    if (target_date !== undefined) {
-      updates.push(`target_date = $${paramCount}`);
-      params.push(target_date);
+    // Support due_date et target_date
+    const dateValue = due_date ?? target_date;
+    if (dateValue !== undefined) {
+      updates.push(`due_date = $${paramCount}`);
+      params.push(dateValue);
+      paramCount++;
+    }
+
+    if (status !== undefined) {
+      updates.push(`status = $${paramCount}`);
+      params.push(status);
+      paramCount++;
+    }
+
+    if (progress !== undefined) {
+      updates.push(`progress = $${paramCount}`);
+      params.push(progress);
       paramCount++;
     }
 
     if (is_completed !== undefined) {
-      updates.push(`is_completed = $${paramCount}`);
-      params.push(is_completed);
+      // Utiliser le champ status au lieu de is_completed
+      updates.push(`status = $${paramCount}`);
+      params.push(is_completed ? 'completed' : 'pending');
       paramCount++;
       
       if (is_completed) {
@@ -573,9 +802,11 @@ router.put('/milestones/:milestoneId', async (req, res) => {
       }
     }
 
-    if (display_order !== undefined) {
-      updates.push(`display_order = $${paramCount}`);
-      params.push(display_order);
+    // Support sequence et display_order
+    const seqValue = sequence ?? display_order;
+    if (seqValue !== undefined) {
+      updates.push(`sequence = $${paramCount}`);
+      params.push(seqValue);
       paramCount++;
     }
 
@@ -686,98 +917,145 @@ router.get('/stats/overview', async (req, res) => {
   }
 });
 
-module.exports = router;
+// ============================================
+// POST /admin/projects/:id/files - Upload fichier (multipart)
+// ============================================
+router.post('/:id/files', uploadMiddleware.array('files', 10), async (req, res) => {
+  try {
+    const pool = getPool();
+    const { id } = req.params;
+    const { description } = req.body;
 
-// ============================================
-// POST /admin/projects/:id/files - Upload fichier
-// ============================================
-router.post('/:id/files', async (req, res) => {
-    try {
-      const pool = getPool();
-      const { id } = req.params;
-      const { file_name, file_url, file_type, file_size, mime_type, description } = req.body;
-  
+    // Vérifier que le projet existe
+    const projectCheck = await pool.query(
+      'SELECT id, user_id, title FROM client_projects WHERE id = $1',
+      [id]
+    );
+
+    if (projectCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Projet non trouvé' });
+    }
+
+    const project = projectCheck.rows[0];
+
+    // Si pas de fichiers dans la requête multipart, vérifier si c'est du JSON
+    if (!req.files || req.files.length === 0) {
+      // Fallback pour JSON (URL directe)
+      const { file_name, file_url, file_type, file_size, mime_type } = req.body;
+      
       if (!file_name || !file_url) {
-        return res.status(400).json({ error: 'Nom et URL du fichier requis' });
+        return res.status(400).json({ error: 'Aucun fichier fourni' });
       }
-  
-      // Vérifier que le projet existe
-      const projectCheck = await pool.query(
-        'SELECT id, user_id, title FROM client_projects WHERE id = $1',
-        [id]
-      );
-  
-      if (projectCheck.rows.length === 0) {
-        return res.status(404).json({ error: 'Projet non trouvé' });
-      }
-  
-      const project = projectCheck.rows[0];
-  
-      // Insérer le fichier
+
       const result = await pool.query(`
         INSERT INTO project_files (
-          project_id, 
-          user_id, 
-          file_name, 
-          file_url, 
-          file_type, 
-          file_size, 
-          mime_type,
-          description
+          project_id, user_id, file_name, file_url, file_type, file_size, mime_type, description
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
-      `, [
-        id, 
-        req.userId, // Admin qui upload
-        file_name, 
-        file_url, 
-        file_type || 'other', 
-        file_size || null, 
-        mime_type || 'application/octet-stream',
-        description || null
-      ]);
-  
-      // Notifier le client
-      await pool.query(`
-        INSERT INTO user_notifications (
-          user_id, 
-          title, 
-          message, 
-          type, 
-          related_type, 
-          related_id
-        )
-        VALUES ($1, $2, $3, 'project_update', 'project', $4)
-      `, [
-        project.user_id,
-        'Nouveau fichier ajouté',
-        `Un fichier "${file_name}" a été ajouté à votre projet "${project.title}"`,
-        id
-      ]);
-  
-      // Log activité
-      await pool.query(`
-        INSERT INTO admin_activity_logs (
-          admin_id, 
-          action, 
-          entity_type, 
-          entity_id, 
-          description
-        )
-        VALUES ($1, 'create', 'project_file', $2, $3)
-      `, [req.userId, result.rows[0].id, `Fichier ajouté: ${file_name}`]);
-  
-      res.json({
-        success: true,
-        file: result.rows[0]
-      });
-  
-    } catch (error) {
-      console.error('Erreur upload fichier:', error);
-      res.status(500).json({ error: 'Erreur serveur' });
+      `, [id, req.userId, file_name, file_url, file_type || 'other', file_size || null, mime_type || 'application/octet-stream', description || null]);
+
+      return res.json({ success: true, file: result.rows[0] });
     }
-  });
+
+    // Vérifier si Cloudinary est configuré
+    const isCloudinaryConfigured = process.env.CLOUDINARY_CLOUD_NAME && 
+                                   process.env.CLOUDINARY_API_KEY && 
+                                   process.env.CLOUDINARY_API_SECRET &&
+                                   process.env.CLOUDINARY_CLOUD_NAME !== 'votre_cloud_name';
+
+    if (!isCloudinaryConfigured) {
+      console.error('❌ Cloudinary non configuré - Configurez CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET dans .env');
+      return res.status(503).json({ 
+        error: 'Service de stockage non configuré',
+        message: 'Veuillez configurer Cloudinary dans le fichier .env du backend (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET)',
+        help: 'Créez un compte gratuit sur https://cloudinary.com'
+      });
+    }
+
+    // Upload vers Cloudinary et enregistrement en BDD
+    const uploadedFiles = [];
+    
+    for (const file of req.files) {
+      try {
+        // Déterminer le type de fichier
+        const isImage = file.mimetype.startsWith('image/');
+        const isDocument = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument'].some(t => file.mimetype.includes(t));
+        
+        // Upload vers Cloudinary
+        const cloudinaryResult = await cloudinaryService.uploadFile(file.buffer, {
+          folder: `${FOLDERS.PROJECTS}/${id}`,
+          resourceType: isImage ? 'image' : 'raw',
+          tags: ['project', id, file.originalname]
+        });
+
+        // Déterminer le type de fichier pour la BDD
+        let fileType = 'other';
+        if (isImage) fileType = 'image';
+        else if (file.mimetype === 'application/pdf') fileType = 'pdf';
+        else if (isDocument) fileType = 'document';
+
+        // Enregistrer en BDD
+        const result = await pool.query(`
+          INSERT INTO project_files (
+            project_id, user_id, file_name, file_url, file_type, file_size, mime_type, description, cloudinary_public_id
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          RETURNING *
+        `, [
+          id,
+          req.userId,
+          file.originalname,
+          cloudinaryResult.secure_url,
+          fileType,
+          file.size,
+          file.mimetype,
+          description || null,
+          cloudinaryResult.public_id
+        ]);
+
+        uploadedFiles.push(result.rows[0]);
+
+        console.log(`✅ Fichier uploadé: ${file.originalname} -> ${cloudinaryResult.secure_url}`);
+      } catch (uploadError) {
+        console.error(`❌ Erreur upload ${file.originalname}:`, uploadError);
+      }
+    }
+
+    if (uploadedFiles.length === 0) {
+      return res.status(500).json({ error: 'Aucun fichier n\'a pu être uploadé. Vérifiez la configuration Cloudinary.' });
+    }
+
+    // Notifier le client
+    await pool.query(`
+      INSERT INTO user_notifications (user_id, title, message, type, related_type, related_id)
+      VALUES ($1, $2, $3, 'project_update', 'project', $4)
+    `, [
+      project.user_id,
+      uploadedFiles.length > 1 ? 'Nouveaux fichiers ajoutés' : 'Nouveau fichier ajouté',
+      uploadedFiles.length > 1 
+        ? `${uploadedFiles.length} fichiers ont été ajoutés à votre projet "${project.title}"`
+        : `Un fichier "${uploadedFiles[0].file_name}" a été ajouté à votre projet "${project.title}"`,
+      id
+    ]);
+
+    // Log activité
+    await pool.query(`
+      INSERT INTO admin_activity_logs (admin_id, action, entity_type, entity_id, description)
+      VALUES ($1, 'create', 'project_file', $2, $3)
+    `, [req.userId, id, `${uploadedFiles.length} fichier(s) ajouté(s)`]);
+
+    res.json({
+      success: true,
+      files: uploadedFiles,
+      count: uploadedFiles.length
+    });
+
+  } catch (error) {
+    console.error('Erreur upload fichier:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
   
   // ============================================
   // DELETE /admin/projects/files/:fileId - Supprimer fichier
@@ -898,10 +1176,6 @@ router.post('/:id/files', async (req, res) => {
 
 
 
-const { 
-  sendProjectCreatedEmail,
-  sendProjectUpdateEmail 
-} = require('../../utils/emailHelpers');
 
 router.use(requireAuth, requireAdmin);
 

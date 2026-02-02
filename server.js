@@ -1,5 +1,22 @@
 // backend/server.js - VERSION JWT AVEC FIX SUPABASE
-require('dotenv').config();
+const path = require('path');
+
+// Charger .env depuis backend/ en priorité, puis racine du projet (cwd)
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+if (!process.env.DATABASE_URL) {
+  require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+}
+
+// En production, variables critiques obligatoires
+if (process.env.NODE_ENV === 'production') {
+  const required = ['DATABASE_URL', 'JWT_SECRET'];
+  const missing = required.filter((k) => !process.env[k] || process.env[k].includes('change-in-production'));
+  if (missing.length) {
+    console.error('❌ Variables manquantes ou par défaut en production:', missing.join(', '));
+    process.exit(1);
+  }
+}
+
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
@@ -8,7 +25,6 @@ const rateLimit = require('express-rate-limit');
 const { initPool } = require('./database/db');
 const { initEmailService, isEmailConfigured } = require('./services/emailService');
 
-// Import des routes
 // Import des routes
 const authRoutes = require('./routes/auth');
 const settingsRoutes = require('./routes/settings');
@@ -23,7 +39,12 @@ const adminContactRoutes = require('./routes/admin/contacts');
 const adminProjectsRoutes = require('./routes/admin/projects');
 const adminReservationsRoutes = require('./routes/admin/reservations');
 const adminDashboardRoutes = require('./routes/admin/dashboard');
+const messagesRoutes = require('./routes/admin/messages');
 const contactRoutes = require('./routes/contact');
+const projectFilesRouter = require('./routes/projectFiles');
+const paymentsRoutes = require('./routes/payments');
+const webhooksRoutes = require('./routes/webhooks');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -104,7 +125,9 @@ const dbUrl = process.env.DATABASE_URL;
 console.log('🔍 DATABASE_URL:', dbUrl ? dbUrl.replace(/:[^:@]+@/, ':****@') : 'NON DÉFINIE');
 
 if (!dbUrl) {
-  console.error('❌ ERREUR: DATABASE_URL non définie dans .env');
+  console.error('❌ ERREUR: DATABASE_URL non définie.');
+  console.error('   Définissez DATABASE_URL dans backend/.env (ou à la racine dans .env).');
+  console.error('   Exemple: DATABASE_URL=postgresql://user:pass@host:5432/dbname');
   process.exit(1);
 }
 
@@ -247,6 +270,12 @@ const authLimiter = rateLimit({
 });
 
 // ============================================
+// WEBHOOK STRIPE - RAW BODY (AVANT BODY PARSER!)
+// ============================================
+// CRITIQUE: Les webhooks Stripe nécessitent le body brut pour vérifier la signature
+app.use('/webhooks/stripe', express.raw({ type: 'application/json' }));
+
+// ============================================
 // BODY PARSER
 // ============================================
 app.use(express.json({ limit: '10mb' }));
@@ -379,7 +408,14 @@ app.get('/test-jwt', require('./middleware/auths').requireAuth, (req, res) => {
   });
 });
 
-// Routes principales
+// ============================================
+// ROUTES WEBHOOKS (pas de rate limit !)
+// ============================================
+app.use('/webhooks', webhooksRoutes);
+
+// ============================================
+// ROUTES PRINCIPALES
+// ============================================
 app.use('/auth', authLimiter, authRoutes);
 app.use('/settings', settingsRoutes);
 app.use('/users', userRoutes);
@@ -389,11 +425,20 @@ app.use('/dashboard', dashboardRoutes);
 app.use('/categories', categoriesRoutes);
 app.use('/dishes', dishesRoutes);
 app.use('/favorites', favoritesRoutes);
+app.use('/contact', contactRoutes);
+app.use('/projects', projectFilesRouter);
+app.use('/messages', messagesRoutes);
+app.use('/payments', paymentsRoutes);
+app.use('/chat', chatRoutes);
+
+// ============================================
+// ROUTES ADMIN
+// ============================================
 app.use('/admin/contact', adminContactRoutes);
+app.use('/admin/messages', messagesRoutes);
 app.use('/admin/projects', adminProjectsRoutes);
 app.use('/admin/reservations', adminReservationsRoutes);
 app.use('/admin/dashboard', adminDashboardRoutes);
-app.use('/contact', contactRoutes);
 
 // ============================================
 // GESTION ERREURS 404
@@ -454,7 +499,9 @@ app.use((err, req, res, next) => {
 // ============================================
 // DÉMARRAGE SERVEUR
 // ============================================
-const server = app.listen(PORT, () => {
+// 0.0.0.0 requis pour Render / Heroku (écoute sur toutes les interfaces)
+const HOST = process.env.HOST || '0.0.0.0';
+const server = app.listen(PORT, HOST, () => {
   console.log('');
   console.log('╔══════════════════════════════════════╗');
   console.log(`║  🚀 Serveur démarré (JWT MODE)       ║`);
@@ -464,13 +511,25 @@ const server = app.listen(PORT, () => {
   console.log(`║  🔗 URL: http://localhost:${PORT}       ║`);
   console.log('╚══════════════════════════════════════╝');
   console.log('');
-  console.log('📍 Routes disponibles:');
+  console.log('📍 Routes principales:');
   console.log('  GET  / - Status API');
   console.log('  GET  /health - Health check détaillé');
   console.log('  GET  /test-db - Test connexion BDD');
+  console.log('');
+  console.log('🔐 Auth:');
   console.log('  POST /auth/login - Connexion');
   console.log('  POST /auth/register - Inscription');
-  console.log('  GET  /settings - Paramètres');
+  console.log('');
+  console.log('💰 Paiements:');
+  console.log('  POST /payments/intent - Créer Payment Intent');
+  console.log('  POST /payments/checkout-session - Créer Checkout Session');
+  console.log('  GET  /payments - Historique paiements');
+  console.log('');
+  console.log('🪝 Webhooks:');
+  console.log('  POST /webhooks/stripe - Webhook Stripe');
+  console.log('');
+  console.log('📚 Documentation API:');
+  console.log('  Voir: docs/API_CONTRACTS.md');
   console.log('');
 });
 
