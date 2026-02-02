@@ -1,0 +1,19 @@
+# Render – Backend Le Sage Dev
+# Utilisé si vous déployez via Blueprint ou pour documenter la config.
+# En dashboard Render : définir les variables d'environnement et le health check path.
+
+services:
+  - type: web
+    name: lesagedev-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    # Health check : GET /health doit retourner 200 en moins de 3s
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true

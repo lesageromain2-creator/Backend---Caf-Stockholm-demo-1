@@ -333,28 +333,36 @@ app.get('/', (req, res) => {
   });
 });
 
+// Health check: répond 200 en moins de 3s pour Render (timeout DB 3s max)
 app.get('/health', async (req, res) => {
-  let dbStatus = 'unknown';
-  let dbLatency = null;
-  
+  const timeoutMs = 3000;
+  const start = Date.now();
+  const dbCheck = pool.query('SELECT 1').then(
+    () => ({ status: 'connected', latency: Date.now() - start }),
+    (err) => {
+      console.error('Health check DB error:', err.message);
+      return { status: 'error: ' + err.message, latency: null };
+    }
+  );
+  const timeout = new Promise((resolve) =>
+    setTimeout(() => resolve({ status: 'timeout', latency: null }), timeoutMs)
+  );
+
+  let dbInfo = { status: 'unknown', latency: null };
   try {
-    const start = Date.now();
-    const result = await pool.query('SELECT 1');
-    dbLatency = Date.now() - start;
-    dbStatus = 'connected';
-  } catch (err) {
-    console.error('Health check DB error:', err.message);
-    dbStatus = 'error: ' + err.message;
+    dbInfo = await Promise.race([dbCheck, timeout]);
+  } catch (_) {
+    dbInfo = { status: 'error', latency: null };
   }
-  
-  res.json({ 
+
+  res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
     auth: 'JWT',
     database: {
-      status: dbStatus,
-      latency: dbLatency ? `${dbLatency}ms` : null,
+      status: dbInfo.status,
+      latency: dbInfo.latency != null ? `${dbInfo.latency}ms` : null,
       connections: {
         total: pool.totalCount,
         idle: pool.idleCount,
