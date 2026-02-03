@@ -1,7 +1,7 @@
 // backend/routes/hotel.js - API Hôtel (chambres, réservations, petit-déj, restauration, spa, offres)
 const express = require('express');
 const router = express.Router();
-const { requireAuth } = require('../middleware/auths');
+const { requireAuth, optionalAuth } = require('../middleware/auths');
 
 const getHotelId = (req) => req.query.hotel_id || req.body?.hotel_id || process.env.DEFAULT_HOTEL_ID;
 
@@ -261,8 +261,9 @@ router.get('/offers', async (req, res) => {
 
 // ============================================
 // CRÉER RÉSERVATION DE SÉJOUR
+// optionalAuth : si l'utilisateur est connecté, on lie la réservation à son compte (visible dans le dashboard)
 // ============================================
-router.post('/reservations', async (req, res) => {
+router.post('/reservations', optionalAuth, async (req, res) => {
   const pool = req.app.locals.pool;
   const hotelId = getHotelId(req);
   if (!hotelId) return res.status(400).json({ error: 'hotel_id requis' });
@@ -279,8 +280,10 @@ router.post('/reservations', async (req, res) => {
     children = 0,
     special_requests,
     add_ons = [],
-    user_id,
+    user_id: bodyUserId,
   } = req.body;
+
+  const userId = req.userId || bodyUserId || null;
 
   if (!guest_email || !guest_firstname || !guest_lastname || !room_type_id || !check_in_date || !check_out_date) {
     return res.status(400).json({ error: 'Champs requis: guest_email, guest_firstname, guest_lastname, room_type_id, check_in_date, check_out_date' });
@@ -325,7 +328,7 @@ router.post('/reservations', async (req, res) => {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending', $13, $14, $15)
       RETURNING *`,
       [
-        hotelId, user_id || null, guest_email, guest_firstname, guest_lastname, guest_phone || null,
+        hotelId, userId, guest_email, guest_firstname, guest_lastname, guest_phone || null,
         room_type_id, check_in_date, check_out_date, nights, adults, children,
         totalAmount, roomType.currency, special_requests || null,
       ]
