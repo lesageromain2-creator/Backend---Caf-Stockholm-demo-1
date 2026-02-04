@@ -63,7 +63,8 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 
 // Patterns pour Vercel et localhost
 const allowedPatterns = [
-  /^https:\/\/lesagedev.*\.vercel\.app$/,
+  /^https:\/\/[a-z0-9-]+\.vercel\.app$/,
+  /^https:\/\/[a-z0-9-]+-[a-z0-9-]+\.vercel\.app$/,
   /^http:\/\/localhost:\d+$/,
   /^http:\/\/127\.0\.0\.1:\d+$/,
 ];
