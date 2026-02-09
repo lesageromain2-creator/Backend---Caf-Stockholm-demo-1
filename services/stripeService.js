@@ -288,13 +288,52 @@ const handleWebhookEvent = async (event) => {
       // Payment succeeded
       case 'payment_intent.succeeded': {
         const paymentIntent = event.data.object;
-        const { project_id, customer_name } = paymentIntent.metadata;
+        const { project_id, customer_name, order_id } = paymentIntent.metadata;
 
-        // Log payment in database (you may want to create a payments table)
         console.log('✅ Payment succeeded:', paymentIntent.id);
 
-        // Get user email for notification
-        if (project_id) {
+        // E-COMMERCE: Mettre à jour commande
+        if (order_id) {
+          // Mettre à jour statut paiement
+          await pool.query(
+            `UPDATE orders 
+             SET payment_status = 'paid', 
+                 payment_method = 'stripe',
+                 stripe_payment_intent_id = $1,
+                 paid_at = NOW(),
+                 status = 'processing',
+                 updated_at = NOW()
+             WHERE id = $2`,
+            [paymentIntent.id, order_id]
+          );
+
+          // Ajouter à l'historique
+          await pool.query(
+            `INSERT INTO order_status_history (order_id, from_status, to_status, comment)
+             VALUES ($1, 'pending', 'processing', 'Paiement confirmé')`,
+            [order_id]
+          );
+
+          // Récupérer info commande pour email
+          const orderResult = await pool.query(
+            `SELECT o.*, u.email, u.firstname 
+             FROM orders o
+             LEFT JOIN users u ON o.user_id = u.id
+             WHERE o.id = $1`,
+            [order_id]
+          );
+
+          if (orderResult.rows.length > 0) {
+            const order = orderResult.rows[0];
+            const email = order.email || order.guest_email;
+            const firstname = order.firstname || order.billing_address?.firstName || 'Client';
+
+            // TODO: Envoyer email confirmation commande
+            console.log(`📧 Order confirmation email should be sent to ${email}`);
+          }
+        }
+        // LEGACY: Project payment
+        else if (project_id) {
           const projectResult = await pool.query(
             `SELECT u.email, u.firstname, cp.title 
              FROM client_projects cp 
@@ -306,7 +345,6 @@ const handleWebhookEvent = async (event) => {
           if (projectResult.rows.length > 0) {
             const { email, firstname, title } = projectResult.rows[0];
             
-            // Send success email
             await sendEmail({
               to: email,
               toName: firstname,
@@ -586,6 +624,49 @@ const listPaymentMethods = async (customerId, type = 'card') => {
   }
 };
 
+// ============================================
+// CREATE PAYMENT INTENT FOR ORDER (E-COMMERCE)
+// ============================================
+const createOrderPaymentIntent = async ({
+  orderId,
+  amount,
+  currency = 'eur',
+  customerEmail,
+  customerName,
+  orderNumber
+}) => {
+  if (!stripe) {
+    throw new Error('Stripe is not configured');
+  }
+
+  try {
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount * 100), // Convert to cents
+      currency: currency.toLowerCase(),
+      description: `Commande ${orderNumber}`,
+      receipt_email: customerEmail,
+      automatic_payment_methods: {
+        enabled: true,
+      },
+      metadata: {
+        order_id: orderId,
+        order_number: orderNumber,
+        customer_name: customerName || '',
+      }
+    });
+
+    return {
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      amount: paymentIntent.amount / 100,
+      currency: paymentIntent.currency
+    };
+  } catch (error) {
+    console.error('Error creating order payment intent:', error);
+    throw error;
+  }
+};
+
 module.exports = {
   createPaymentIntent,
   createCheckoutSession,
@@ -601,5 +682,6 @@ module.exports = {
   confirmPaymentIntent,
   retrieveCustomer,
   updateCustomer,
-  listPaymentMethods
+  listPaymentMethods,
+  createOrderPaymentIntent
 };

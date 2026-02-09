@@ -48,6 +48,14 @@ const webhooksRoutes = require('./routes/webhooks');
 const chatRoutes = require('./routes/chat');
 const hotelRoutes = require('./routes/hotel');
 
+// Routes E-commerce
+const productsRoutes = require('./routes/products');
+const ecommerceCategoriesRoutes = require('./routes/ecommerce-categories');
+const cartRoutes = require('./routes/cart');
+const ecommerceOrdersRoutes = require('./routes/ecommerce-orders');
+const couponsRoutes = require('./routes/coupons');
+const chatbotRoutes = require('./routes/chatbot');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -443,6 +451,16 @@ app.use('/messages', messagesRoutes);
 app.use('/payments', paymentsRoutes);
 app.use('/chat', chatRoutes);
 app.use('/hotel', hotelRoutes);
+
+// ============================================
+// ROUTES E-COMMERCE
+// ============================================
+app.use('/products', productsRoutes);
+app.use('/ecommerce/categories', ecommerceCategoriesRoutes);
+app.use('/cart', cartRoutes);
+app.use('/ecommerce/orders', ecommerceOrdersRoutes);
+app.use('/coupons', couponsRoutes);
+app.use('/chatbot', chatbotRoutes);
 
 // ============================================
 // ROUTES ADMIN

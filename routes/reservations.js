@@ -90,12 +90,23 @@ router.post('/', requireAuth, async (req, res) => {
       });
     }
 
-    // Vérifier horaires de travail (9h-18h)
+    // Vérifier horaires : 9h-18h pour rendez-vous, 12h-14h et 19h-22h pour réservation table (restaurant)
     const [hour] = reservation_time.split(':').map(Number);
-    if (hour < 9 || hour >= 18) {
-      return res.status(400).json({ 
-        error: 'Horaires disponibles : 9h00 - 18h00' 
-      });
+    const isTableReservation = (meeting_type || '').toLowerCase() === 'table';
+    if (isTableReservation) {
+      const validLunch = hour >= 12 && hour < 14;
+      const validDinner = hour >= 19 && hour < 22;
+      if (!validLunch && !validDinner) {
+        return res.status(400).json({
+          error: 'Horaires restaurant : déjeuner 12h-14h, dîner 19h-22h'
+        });
+      }
+    } else {
+      if (hour < 9 || hour >= 18) {
+        return res.status(400).json({
+          error: 'Horaires disponibles : 9h00 - 18h00'
+        });
+      }
     }
 
     // Vérifier si le créneau est disponible

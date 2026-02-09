@@ -485,4 +485,49 @@ router.get(
   }
 );
 
+// ============================================
+// E-COMMERCE: CREATE PAYMENT INTENT FOR ORDER
+// ============================================
+/**
+ * POST /payments/order-intent
+ * Créer un Payment Intent pour une commande e-commerce
+ * Pas d'authentification requise (pour invités)
+ */
+router.post('/order-intent', async (req, res) => {
+  try {
+    const { orderId, orderNumber, amount, customerEmail, customerName } = req.body;
+
+    if (!orderId || !orderNumber || !amount || !customerEmail) {
+      return res.status(400).json({
+        success: false,
+        error: 'Paramètres manquants'
+      });
+    }
+
+    const paymentIntent = await stripeService.createOrderPaymentIntent({
+      orderId,
+      orderNumber,
+      amount,
+      customerEmail,
+      customerName,
+      currency: 'eur'
+    });
+
+    res.json({
+      success: true,
+      clientSecret: paymentIntent.clientSecret,
+      paymentIntentId: paymentIntent.paymentIntentId,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency
+    });
+  } catch (error) {
+    console.error('❌ Erreur création Payment Intent commande:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur lors de la création du paiement',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 module.exports = router;

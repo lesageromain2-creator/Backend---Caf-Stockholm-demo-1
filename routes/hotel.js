@@ -288,20 +288,26 @@ router.post('/reservations', optionalAuth, async (req, res) => {
 
   const userId = req.userId || bodyUserId || null;
 
-  if (!guest_email || !guest_firstname || !guest_lastname || !room_type_id || !check_in_date || !check_out_date) {
-    return res.status(400).json({ error: 'Champs requis: guest_email, guest_firstname, guest_lastname, room_type_id, check_in_date, check_out_date' });
+  if (!guest_email || !guest_firstname || !guest_lastname || !check_in_date || !check_out_date) {
+    return res.status(400).json({ error: 'Champs requis: guest_email, guest_firstname, guest_lastname, check_in_date, check_out_date' });
   }
 
   const checkIn = new Date(check_in_date);
   const checkOut = new Date(check_out_date);
   if (checkOut <= checkIn) return res.status(400).json({ error: 'check_out doit être après check_in' });
-  const nights = Math.ceil((checkOut - checkIn) / (24 * 60 * 60 * 1000));
+  const nights = Math.max(1, Math.ceil((checkOut - checkIn) / (24 * 60 * 60 * 1000)));
 
   try {
-    const roomType = await queryOne(pool, 'SELECT * FROM room_types WHERE id = $1 AND hotel_id = $2', [room_type_id, hotelId]);
-    if (!roomType) return res.status(404).json({ error: 'Type de chambre non trouvé' });
+    let resolvedRoomTypeId = room_type_id;
+    if (!resolvedRoomTypeId) {
+      const defaultRoomType = await queryOne(pool, 'SELECT id, base_price_per_night, currency FROM room_types WHERE hotel_id = $1 AND is_active = true ORDER BY display_order, created_at LIMIT 1', [hotelId]);
+      if (!defaultRoomType) return res.status(400).json({ error: 'Aucun type de table/chambre configuré pour cet établissement. Créez au moins un room_type (ex. "Table") dans la base.' });
+      resolvedRoomTypeId = defaultRoomType.id;
+    }
+    const roomType = await queryOne(pool, 'SELECT * FROM room_types WHERE id = $1 AND hotel_id = $2', [resolvedRoomTypeId, hotelId]);
+    if (!roomType) return res.status(404).json({ error: 'Type de chambre/table non trouvé' });
 
-    const pricings = await query(pool, 'SELECT * FROM room_pricings WHERE room_type_id = $1', [room_type_id]);
+    const pricings = await query(pool, 'SELECT * FROM room_pricings WHERE room_type_id = $1', [resolvedRoomTypeId]);
     let roomTotal = 0;
     for (let i = 0; i < nights; i++) {
       const d = new Date(checkIn);
@@ -332,7 +338,7 @@ router.post('/reservations', optionalAuth, async (req, res) => {
       RETURNING *`,
       [
         hotelId, userId, guest_email, guest_firstname, guest_lastname, guest_phone || null,
-        room_type_id, check_in_date, check_out_date, nights, adults, children,
+        resolvedRoomTypeId, check_in_date, check_out_date, nights, adults, children,
         totalAmount, roomType.currency, special_requests || null,
       ]
     );
