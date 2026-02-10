@@ -8,7 +8,7 @@ const express = require('express');
 const router = express.Router();
 const { z } = require('zod');
 const chatbotService = require('../services/chatbotService');
-const { verifyToken, isAdmin } = require('../middleware/auth');
+const { verifyToken, isAdmin } = require('../middleware/auths');
 const { getPool } = require('../database/db');
 
 // ============================================

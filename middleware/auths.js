@@ -351,8 +351,10 @@ const requireOwnership = (userIdField, location = 'params') => {
 };
 
 module.exports = {
+  verifyToken,
   requireAuth,
   requireAdmin,
+  isAdmin: requireAdmin, // Alias pour compatibilité
   requireStaff,
   requireActiveAccount,
   optionalAuth,

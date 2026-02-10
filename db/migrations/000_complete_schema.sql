@@ -624,6 +624,18 @@ CREATE INDEX idx_addresses_user ON customer_addresses(user_id);
 CREATE INDEX idx_addresses_default ON customer_addresses(is_default);
 
 -- ============================================
+-- TABLE: settings
+-- ============================================
+CREATE TABLE IF NOT EXISTS settings (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  setting_key VARCHAR(255) NOT NULL UNIQUE,
+  setting_value TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_settings_key ON settings(setting_key);
+
+-- ============================================
 -- TRIGGERS : updated_at automatique
 -- ============================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -648,6 +660,7 @@ CREATE TRIGGER update_product_reviews_updated_at BEFORE UPDATE ON product_review
 CREATE TRIGGER update_support_tickets_updated_at BEFORE UPDATE ON support_tickets FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_return_requests_updated_at BEFORE UPDATE ON return_requests FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_customer_addresses_updated_at BEFORE UPDATE ON customer_addresses FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_settings_updated_at BEFORE UPDATE ON settings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
 -- DONNÉES DE TEST (Optionnel - Commenter si non souhaité)
