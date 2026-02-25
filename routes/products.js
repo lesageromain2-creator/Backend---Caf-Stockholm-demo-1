@@ -10,20 +10,23 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../database/db');
-const { verifyToken, isAdmin } = require('../middleware/auths');
+const { requireAdmin } = require('../middleware/auths');
 const { z } = require('zod');
 
 // ============================================
 // VALIDATION SCHEMAS
 // ============================================
+// Helper: optional UUID, accept empty string as undefined (évite crash admin à la publication)
+const optionalUuid = z.union([z.string().uuid(), z.literal('')]).transform((v) => (v === '' ? undefined : v)).optional();
+
 const productCreateSchema = z.object({
   sku: z.string().min(1).max(100),
   name: z.string().min(1).max(255),
   slug: z.string().min(1).max(300),
   description: z.string().optional(),
   shortDescription: z.string().max(500).optional(),
-  categoryId: z.string().uuid().optional(),
-  brandId: z.string().uuid().optional(),
+  categoryId: optionalUuid,
+  brandId: optionalUuid,
   tags: z.array(z.string()).optional(),
   price: z.number().positive(),
   compareAtPrice: z.number().positive().optional(),
@@ -92,6 +95,19 @@ router.get('/', async (req, res, next) => {
     const params = [];
     let paramIndex = 1;
 
+    // Résoudre category : si c'est un slug (pas un UUID), récupérer l'id de la catégorie
+    let categoryId = category;
+    if (category) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(category)) {
+        const catRow = await db.queryOne('SELECT id FROM categories WHERE slug = $1', [category]);
+        categoryId = catRow ? catRow.id : null;
+        if (!categoryId) {
+          return res.json({ success: true, products: [], total: 0, page: pageNum, limit: limitNum });
+        }
+      }
+    }
+
     // Filtres
     if (search) {
       query += ` AND (p.name ILIKE $${paramIndex} OR p.description ILIKE $${paramIndex})`;
@@ -99,9 +115,9 @@ router.get('/', async (req, res, next) => {
       paramIndex++;
     }
 
-    if (category) {
+    if (categoryId) {
       query += ` AND p.category_id = $${paramIndex}`;
-      params.push(category);
+      params.push(categoryId);
       paramIndex++;
     }
 
@@ -141,12 +157,15 @@ router.get('/', async (req, res, next) => {
       paramIndex++;
     }
 
-    // Tri
+    // Tri : si pas de filtre catégorie, ordonner par ordre des catégories puis par nom
     const validSorts = ['created_at', 'name', 'price', 'sales_count', 'views_count'];
     const sortField = validSorts.includes(sort) ? sort : 'created_at';
     const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
-
-    query += ` ORDER BY p.${sortField} ${sortOrder}`;
+    if (!categoryId) {
+      query += ` ORDER BY c.display_order ASC NULLS LAST, c.name ASC, p.name ASC`;
+    } else {
+      query += ` ORDER BY p.${sortField} ${sortOrder}`;
+    }
 
     // Pagination
     query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
@@ -170,9 +189,9 @@ router.get('/', async (req, res, next) => {
       countIndex++;
     }
 
-    if (category) {
+    if (categoryId) {
       countQuery += ` AND p.category_id = $${countIndex}`;
-      countParams.push(category);
+      countParams.push(categoryId);
       countIndex++;
     }
 
@@ -229,12 +248,17 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// UUID regex pour accepter GET /products/:id en plus de GET /products/:slug
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ============================================
-// GET /api/products/:slug - Détail produit
+// GET /api/products/:slug ou :id - Détail produit
 // ============================================
 router.get('/:slug', async (req, res, next) => {
   try {
     const { slug } = req.params;
+    const isId = UUID_REGEX.test(slug);
+    const whereClause = isId ? 'p.id = $1' : 'p.slug = $1';
 
     const query = `
       SELECT 
@@ -247,7 +271,7 @@ router.get('/:slug', async (req, res, next) => {
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
       LEFT JOIN brands b ON p.brand_id = b.id
-      WHERE p.slug = $1
+      WHERE ${whereClause}
     `;
 
     const result = await db.query(query, [slug]);
@@ -261,41 +285,51 @@ router.get('/:slug', async (req, res, next) => {
 
     const product = result.rows[0];
 
-    // Incrémenter compteur de vues
-    await db.query(
-      'UPDATE products SET views_count = views_count + 1 WHERE id = $1',
-      [product.id]
-    );
+    // Incrémenter compteur de vues (optionnel, ne pas bloquer si colonne absente)
+    try {
+      await db.query(
+        'UPDATE products SET views_count = COALESCE(views_count, 0) + 1 WHERE id = $1',
+        [product.id]
+      );
+    } catch (e) {
+      // views_count peut être absent en ancienne migration
+    }
 
     // Récupérer les variantes
     const variantsResult = await db.query(
       `SELECT * FROM product_variants 
        WHERE product_id = $1 AND is_active = true 
-       ORDER BY display_order, name`,
+       ORDER BY name`,
       [product.id]
     );
 
-    // Récupérer les avis
-    const reviewsResult = await db.query(
-      `SELECT 
-        pr.*,
-        u.firstname,
-        u.lastname,
-        u.avatar_url
-       FROM product_reviews pr
-       LEFT JOIN users u ON pr.user_id = u.id
-       WHERE pr.product_id = $1 AND pr.is_approved = true
-       ORDER BY pr.created_at DESC
-       LIMIT 10`,
-      [product.id]
-    );
+    // Récupérer les avis (users n'a que "name", pas firstname/lastname)
+    let reviews = [];
+    try {
+      const reviewsResult = await db.query(
+        `SELECT pr.*, u.name AS user_name
+         FROM product_reviews pr LEFT JOIN users u ON pr.user_id = u.id
+         WHERE pr.product_id = $1 AND pr.is_approved = true
+         ORDER BY pr.created_at DESC LIMIT 10`,
+        [product.id]
+      );
+      reviews = (reviewsResult.rows || []).map((r) => {
+        const parts = (r.user_name || '').trim().split(/\s+/);
+        const firstname = parts[0] || '';
+        const lastname = parts.slice(1).join(' ') || '';
+        const { user_name, ...rest } = r;
+        return { ...rest, firstname, lastname, avatar_url: null };
+      });
+    } catch (e) {
+      console.warn('Reviews fetch skipped:', e.message);
+    }
 
     res.json({
       success: true,
       product: {
         ...product,
-        variants: variantsResult.rows,
-        reviews: reviewsResult.rows,
+        variants: variantsResult.rows || [],
+        reviews,
       },
     });
   } catch (error) {
@@ -306,9 +340,13 @@ router.get('/:slug', async (req, res, next) => {
 // ============================================
 // POST /api/products - Création (admin)
 // ============================================
-router.post('/', verifyToken, isAdmin, async (req, res, next) => {
+router.post('/', requireAdmin, async (req, res, next) => {
   try {
-    const validated = productCreateSchema.parse(req.body);
+    // Normaliser les chaînes vides pour les champs optionnels (évite crash Zod)
+    const body = { ...req.body };
+    if (body.categoryId === '') body.categoryId = undefined;
+    if (body.brandId === '') body.brandId = undefined;
+    const validated = productCreateSchema.parse(body);
 
     // Vérifier unicité SKU et slug
     const existingCheck = await db.query(
@@ -400,10 +438,13 @@ router.post('/', verifyToken, isAdmin, async (req, res, next) => {
 // ============================================
 // PATCH /api/products/:id - Mise à jour (admin)
 // ============================================
-router.patch('/:id', verifyToken, isAdmin, async (req, res, next) => {
+router.patch('/:id', requireAdmin, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const validated = productUpdateSchema.parse(req.body);
+    const body = { ...req.body };
+    if (body.categoryId === '') body.categoryId = undefined;
+    if (body.brandId === '') body.brandId = undefined;
+    const validated = productUpdateSchema.parse(body);
 
     // Vérifier existence
     const existingProduct = await db.query(
@@ -457,6 +498,7 @@ router.patch('/:id', verifyToken, isAdmin, async (req, res, next) => {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
+      console.error('PATCH /products/:id validation error:', error.errors);
       return res.status(400).json({
         success: false,
         message: 'Données invalides',
@@ -469,22 +511,41 @@ router.patch('/:id', verifyToken, isAdmin, async (req, res, next) => {
 
 // ============================================
 // DELETE /api/products/:id - Suppression (admin)
+// Libère les références (order_items, cart_items, etc.) puis supprime le produit.
 // ============================================
-router.delete('/:id', verifyToken, isAdmin, async (req, res, next) => {
+router.delete('/:id', requireAdmin, async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const result = await db.query(
-      'DELETE FROM products WHERE id = $1 RETURNING id',
-      [id]
-    );
-
-    if (result.rows.length === 0) {
+    // Vérifier que le produit existe
+    const existing = await db.query('SELECT id FROM products WHERE id = $1', [id]);
+    if (existing.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Produit non trouvé',
       });
     }
+
+    // 1. order_items : mettre product_id et variant_id à NULL (conserver l'historique des commandes)
+    await db.query(
+      'UPDATE order_items SET variant_id = NULL WHERE variant_id IN (SELECT id FROM product_variants WHERE product_id = $1)',
+      [id]
+    );
+    await db.query('UPDATE order_items SET product_id = NULL WHERE product_id = $1', [id]);
+
+    // 2. Supprimer les lignes des paniers et listes d'envies
+    await db.query('DELETE FROM cart_items WHERE product_id = $1', [id]);
+    await db.query('DELETE FROM wishlist_items WHERE product_id = $1', [id]);
+
+    // 3. Avis et mouvements de stock : supprimer ou libérer la référence
+    await db.query('DELETE FROM product_reviews WHERE product_id = $1', [id]);
+    await db.query('UPDATE inventory_movements SET product_id = NULL WHERE product_id = $1', [id]);
+
+    // 4. Variantes du produit (après avoir libéré order_items.variant_id)
+    await db.query('DELETE FROM product_variants WHERE product_id = $1', [id]);
+
+    // 5. Supprimer le produit
+    await db.query('DELETE FROM products WHERE id = $1', [id]);
 
     res.json({
       success: true,

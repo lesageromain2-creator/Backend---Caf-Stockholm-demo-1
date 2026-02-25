@@ -31,9 +31,9 @@ const searchProducts = async (query, db) => {
   try {
     const result = await db.query(
       `SELECT 
-        id, name, slug, short_description, price, 
-        compare_at_price, featured_image, stock_quantity,
-        category_name, brand_name
+        p.id, p.name, p.slug, p.short_description, p.price, 
+        p.compare_at_price, p.featured_image, p.stock_quantity,
+        c.name AS category_name, b.name AS brand_name
        FROM products p
        LEFT JOIN categories c ON p.category_id = c.id
        LEFT JOIN brands b ON p.brand_id = b.id
@@ -204,6 +204,15 @@ const sendMessage = async (message, threadId, db) => {
     throw new Error('OPENAI_ASSISTANT_ID not configured');
   }
 
+  // Détecter le placeholder (ex: asst_VOTRE_ASSISTANT_ID)
+  if (ASSISTANT_ID.includes('VOTRE_ASSISTANT') || ASSISTANT_ID === 'asst_') {
+    const e = new Error(
+      'Assistant non configuré : remplacez OPENAI_ASSISTANT_ID dans .env par un ID réel. Créez un assistant via POST /chatbot/setup-assistant (admin).'
+    );
+    e.code = 'ASSISTANT_NOT_CONFIGURED';
+    throw e;
+  }
+
   try {
     // Créer ou récupérer thread
     const thread = await createOrGetThread(threadId);
@@ -279,24 +288,24 @@ const createAssistant = async () => {
 
   try {
     const assistant = await openai.beta.assistants.create({
-      name: 'Assistant E-commerce VotreShop',
-      instructions: `Tu es un assistant virtuel pour une boutique e-commerce.
+      name: 'Björn — Kafé Stockholm',
+      instructions: `Tu es Björn, le guide suédois virtuel du Kafé Stockholm, premier café suédois authentique de Lyon. Tu parles en français avec une touche nordique (tu peux utiliser "Hej", "Fika", "Välkommen" quand c'est naturel).
 
-Tu peux aider les clients à :
-- Trouver des produits spécifiques
-- Obtenir des recommandations
-- Vérifier le statut de leurs commandes
-- Répondre aux questions sur les produits
-- Expliquer les politiques de retour et de livraison
+## Rôle
+- Aider sur la carte : boissons chaudes, pains garnis (smörgås), pâtisseries (kanelbullar, etc.), épicerie suédoise.
+- Donner des recommandations (plats, Fika, allergènes).
+- Indiquer les horaires : Lun 10h–18h / Mar–Ven 8h–18h / Sam 9h–18h / Dim fermé. Service déjeuner Mar–Sam 11h–18h.
+- Expliquer le click & collect et vérifier le statut des commandes (numéro type ORD-YYYYMMDD-XXXX).
+- Parler de la privatisation (salles, capacité ~60, événements).
 
-Informations boutique :
-- Livraison gratuite à partir de 50€
-- Retours gratuits sous 30 jours
-- Paiement sécurisé par Stripe
-- Support client disponible 7j/7
+## Infos Kafé Stockholm
+- **Adresse** : 10 rue Saint-Polycarpe, 69001 Lyon.
+- **Téléphone** : 04 78 30 97 06. **Email** : contact@kafestockholm.fr.
+- **Click & collect** : commande en ligne, retrait au café. Pas de livraison.
+- **Fondatrices** : Anna Notini-Williatte & Katarina Ronteix. Café women-owned, LGBTQ+ friendly.
 
-Sois toujours courtois, concis et professionnel.
-Si tu ne connais pas la réponse, dirige le client vers le support humain.`,
+## Ton
+Chaleureux, concis, authentique. Utilise search_products pour la carte et get_order_status pour les commandes. Si tu n'as pas l'info (ex. allergènes précis), invite à appeler ou à consulter la carte / contact.`,
       model: 'gpt-4-turbo-preview',
       tools: [
         {

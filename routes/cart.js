@@ -10,6 +10,7 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../database/db');
+const { requireAdmin } = require('../middleware/auths');
 const { z } = require('zod');
 const crypto = require('crypto');
 
@@ -96,6 +97,40 @@ async function calculateCartTotals(cartId) {
     subtotal: subtotal.toFixed(2),
   };
 }
+
+// ============================================
+// GET /api/cart/admin/active-carts - Paniers en cours (admin, temps réel)
+// ============================================
+router.get('/admin/active-carts', requireAdmin, async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT 
+        c.id,
+        c.user_id,
+        c.session_id,
+        c.created_at,
+        c.updated_at,
+        u.email as user_email,
+        u.name as user_name,
+        COUNT(ci.id)::int as items_count,
+        COALESCE(SUM(ci.price_snapshot * ci.quantity), 0)::numeric(10,2) as subtotal
+       FROM carts c
+       LEFT JOIN users u ON c.user_id = u.id
+       INNER JOIN cart_items ci ON ci.cart_id = c.id
+       WHERE c.expires_at IS NULL OR c.expires_at > NOW()
+       GROUP BY c.id, c.user_id, c.session_id, c.created_at, c.updated_at, u.email, u.name
+       HAVING COUNT(ci.id) > 0
+       ORDER BY c.updated_at DESC
+       LIMIT 50`
+    );
+    res.json({
+      success: true,
+      carts: result.rows,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ============================================
 // GET /api/cart - Récupérer le panier

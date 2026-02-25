@@ -9,8 +9,8 @@
 
 const express = require('express');
 const router = express.Router();
-const { db } = require('../database/db');
-const { verifyToken, isAdmin } = require('../middleware/auths');
+const { db, getPool } = require('../database/db');
+const { requireAuth, requireAdmin, isAdmin, optionalAuth } = require('../middleware/auths');
 const { z } = require('zod');
 
 // ============================================
@@ -19,14 +19,15 @@ const { z } = require('zod');
 const addressSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
+  email: z.string().email().optional(),
   company: z.string().optional(),
-  addressLine1: z.string().min(1),
+  addressLine1: z.string().min(1).optional(),
   addressLine2: z.string().optional(),
-  city: z.string().min(1),
+  city: z.string().min(1).optional(),
   state: z.string().optional(),
-  postalCode: z.string().min(1),
-  country: z.string().length(2),
-  phone: z.string().min(1),
+  postalCode: z.string().min(1).optional(),
+  country: z.string().length(2).optional(),
+  phone: z.string().min(1).optional(),
 });
 
 const createOrderSchema = z.object({
@@ -37,10 +38,13 @@ const createOrderSchema = z.object({
     quantity: z.number().int().positive(),
   })).min(1),
   billingAddress: addressSchema,
-  shippingAddress: addressSchema,
+  shippingAddress: addressSchema.optional(), // optionnel pour click & collect (adresse café par défaut)
   customerNote: z.string().optional(),
   couponCode: z.string().optional(),
   shippingMethod: z.string().optional(),
+  orderType: z.enum(['click_collect', 'on_site', 'privatisation', 'epicerie']).optional(),
+  pickupTime: z.string().optional(), // ISO string ou "12:30"
+  specialNotes: z.string().optional(),
 });
 
 const updateStatusSchema = z.object({
@@ -188,12 +192,12 @@ async function calculateOrderTotals(items, couponCode = null) {
 // POST /api/ecommerce/orders - Créer commande
 // ============================================
 router.post('/', async (req, res, next) => {
-  const client = await db.pool.connect();
+  const client = await getPool().connect();
   
   try {
     const validated = createOrderSchema.parse(req.body);
     const userId = req.user?.id || null;
-    const guestEmail = validated.billingAddress.email || req.body.email;
+    const guestEmail = validated.billingAddress.email || req.body.billingAddress?.email || req.body.email || null;
 
     await client.query('BEGIN');
 
@@ -211,7 +215,11 @@ router.post('/', async (req, res, next) => {
     // Générer numéro commande
     const orderNumber = await generateOrderNumber();
 
-    // Créer commande
+    const shippingAddressToUse = validated.shippingAddress || validated.billingAddress;
+    const orderType = validated.orderType || 'click_collect';
+    const pickupTime = validated.pickupTime || null;
+    const specialNotes = validated.specialNotes || null;
+
     const insertOrderQuery = `
       INSERT INTO orders (
         order_number, user_id, guest_email,
@@ -219,9 +227,11 @@ router.post('/', async (req, res, next) => {
         subtotal, shipping_cost, tax_amount, discount_amount, total_amount,
         coupon_code, coupon_discount,
         shipping_method, customer_note,
-        status, payment_status
+        status, payment_status,
+        order_type, pickup_time, special_notes
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+        $17, $18::timestamptz, $19
       )
       RETURNING *
     `;
@@ -231,7 +241,7 @@ router.post('/', async (req, res, next) => {
       userId,
       guestEmail,
       JSON.stringify(validated.billingAddress),
-      JSON.stringify(validated.shippingAddress),
+      JSON.stringify(shippingAddressToUse),
       subtotal,
       shippingCost,
       taxAmount,
@@ -239,10 +249,13 @@ router.post('/', async (req, res, next) => {
       totalAmount,
       validated.couponCode || null,
       discountAmount,
-      validated.shippingMethod || 'standard',
+      validated.shippingMethod || 'click_collect',
       validated.customerNote || null,
       'pending',
       'pending',
+      orderType,
+      pickupTime,
+      specialNotes,
     ];
 
     const orderResult = await client.query(insertOrderQuery, orderValues);
@@ -356,11 +369,139 @@ router.post('/', async (req, res, next) => {
 });
 
 // ============================================
+// GET /api/ecommerce/orders/admin/list - Liste toutes les commandes (admin)
+// ============================================
+router.get('/admin/list', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { status = '', search = '', page = '1', limit = '20' } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20));
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = `
+      SELECT 
+        o.id,
+        o.order_number,
+        o.guest_email,
+        o.user_id,
+        o.total_amount,
+        o.status,
+        o.payment_status,
+        o.created_at,
+        o.updated_at,
+        COUNT(oi.id)::int as items_count
+      FROM orders o
+      LEFT JOIN order_items oi ON o.id = oi.order_id
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramIndex = 1;
+
+    if (status) {
+      query += ` AND o.status = $${paramIndex}`;
+      params.push(status);
+      paramIndex++;
+    }
+    if (search && search.trim()) {
+      query += ` AND (o.order_number ILIKE $${paramIndex} OR o.guest_email ILIKE $${paramIndex})`;
+      params.push(`%${search.trim()}%`);
+      paramIndex++;
+    }
+
+    query += `
+      GROUP BY o.id
+      ORDER BY o.created_at DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+    params.push(limitNum, offset);
+
+    const result = await db.query(query, params);
+
+    let countQuery = `SELECT COUNT(*) as total FROM orders o WHERE 1=1`;
+    const countParams = [];
+    let countIdx = 1;
+    if (status) {
+      countQuery += ` AND o.status = $${countIdx}`;
+      countParams.push(status);
+      countIdx++;
+    }
+    if (search && search.trim()) {
+      countQuery += ` AND (o.order_number ILIKE $${countIdx} OR o.guest_email ILIKE $${countIdx})`;
+      countParams.push(`%${search.trim()}%`);
+    }
+    const countResult = await db.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    res.json({
+      success: true,
+      orders: result.rows,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum) || 1,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================
+// GET /api/ecommerce/orders/admin/by-id/:id - Détail commande par UUID (admin)
+// ============================================
+router.get('/admin/by-id/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de commande invalide (UUID attendu)',
+      });
+    }
+
+    const orderResult = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Commande non trouvée',
+      });
+    }
+    const order = orderResult.rows[0];
+
+    const itemsResult = await db.query(
+      'SELECT * FROM order_items WHERE order_id = $1 ORDER BY created_at',
+      [id]
+    );
+    const historyResult = await db.query(
+      `SELECT osh.*, u.name as admin_name
+       FROM order_status_history osh
+       LEFT JOIN users u ON osh.admin_id = u.id
+       WHERE osh.order_id = $1
+       ORDER BY osh.created_at DESC`,
+      [id]
+    );
+
+    res.json({
+      success: true,
+      order: {
+        ...order,
+        items: itemsResult.rows,
+        statusHistory: historyResult.rows,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================
 // GET /api/ecommerce/orders - Liste commandes
 // ============================================
-router.get('/', verifyToken, async (req, res, next) => {
+router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const userId = req.user.id;
+    const userId = req.userId;
     const { status = '', page = '1', limit = '10' } = req.query;
 
     const pageNum = parseInt(page);
@@ -421,10 +562,10 @@ router.get('/', verifyToken, async (req, res, next) => {
 // ============================================
 // GET /api/ecommerce/orders/:orderNumber - Détail
 // ============================================
-router.get('/:orderNumber', async (req, res, next) => {
+router.get('/:orderNumber', optionalAuth, async (req, res, next) => {
   try {
     const { orderNumber } = req.params;
-    const userId = req.user?.id;
+    const userId = req.userId || req.user?.id;
 
     // Si non authentifié, permettre accès avec email
     const email = req.query.email;
@@ -470,8 +611,7 @@ router.get('/:orderNumber', async (req, res, next) => {
     const historyResult = await db.query(
       `SELECT 
         osh.*,
-        u.firstname,
-        u.lastname
+        u.name as admin_name
        FROM order_status_history osh
        LEFT JOIN users u ON osh.admin_id = u.id
        WHERE osh.order_id = $1
@@ -495,11 +635,18 @@ router.get('/:orderNumber', async (req, res, next) => {
 // ============================================
 // PATCH /api/ecommerce/orders/:id/status - Modifier statut (admin)
 // ============================================
-router.patch('/:id/status', verifyToken, isAdmin, async (req, res, next) => {
+router.patch('/:id/status', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const { id } = req.params;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de commande invalide (UUID attendu)',
+      });
+    }
     const validated = updateStatusSchema.parse(req.body);
-    const adminId = req.user.id;
+    const adminId = req.userId;
 
     // Récupérer commande actuelle
     const orderResult = await db.query('SELECT * FROM orders WHERE id = $1', [id]);
@@ -565,12 +712,12 @@ router.patch('/:id/status', verifyToken, isAdmin, async (req, res, next) => {
 // ============================================
 // POST /api/ecommerce/orders/:id/cancel - Annuler commande
 // ============================================
-router.post('/:id/cancel', verifyToken, async (req, res, next) => {
-  const client = await db.pool.connect();
+router.post('/:id/cancel', requireAuth, async (req, res, next) => {
+  const client = await getPool().connect();
   
   try {
     const { id } = req.params;
-    const userId = req.user.id;
+    const userId = req.userId;
     const { reason } = req.body;
 
     await client.query('BEGIN');
@@ -654,6 +801,44 @@ router.post('/:id/cancel', verifyToken, async (req, res, next) => {
     next(error);
   } finally {
     client.release();
+  }
+});
+
+/**
+ * GET /api/ecommerce/orders/my-orders
+ * Récupérer les commandes de l'utilisateur connecté
+ */
+router.get('/my-orders', requireAuth, async (req, res, next) => {
+  const pool = getPool();
+  
+  try {
+    const userId = req.userId;
+    
+    // Récupérer les commandes de l'utilisateur
+    const ordersResult = await pool.query(`
+      SELECT 
+        id,
+        order_number,
+        total_amount,
+        status,
+        payment_status,
+        shipping_status,
+        created_at,
+        updated_at,
+        billing_address,
+        shipping_address
+      FROM orders
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+    `, [userId]);
+    
+    res.json({
+      success: true,
+      orders: ordersResult.rows,
+    });
+  } catch (error) {
+    console.error('Erreur récupération commandes utilisateur:', error);
+    next(error);
   }
 });
 
