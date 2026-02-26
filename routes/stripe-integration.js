@@ -57,8 +57,22 @@ router.post('/create-checkout', verifyToken, async (req, res, next) => {
     // Créer les line_items pour Stripe
     const lineItems = await Promise.all(
       cartItems.rows.map(async (item) => {
-        // Si le produit n'a pas de price_id Stripe, le créer
+        // Si le produit n'a pas de price_id Stripe valide, le créer (ou le recréer)
         let priceId = item.variant_stripe_price_id || item.stripe_price_id;
+
+        // Vérifier que le priceId stocké existe bien sur le compte Stripe courant
+        if (priceId) {
+          try {
+            await stripe.prices.retrieve(priceId);
+          } catch (err) {
+            // Ancien price appartenant à un autre compte / mode → on le recrée proprement
+            if (err && err.code === 'resource_missing') {
+              priceId = null;
+            } else {
+              throw err;
+            }
+          }
+        }
 
         if (!priceId) {
           // Créer le produit Stripe si nécessaire
@@ -174,6 +188,20 @@ router.post('/create-checkout-from-order', async (req, res, next) => {
     const lineItems = await Promise.all(
       itemsResult.rows.map(async (item) => {
         let priceId = item.variant_stripe_price_id || item.stripe_price_id;
+
+        // Vérifier que le priceId existe bien sur le compte Stripe courant
+        if (priceId) {
+          try {
+            await stripe.prices.retrieve(priceId);
+          } catch (err) {
+            if (err && err.code === 'resource_missing') {
+              priceId = null;
+            } else {
+              throw err;
+            }
+          }
+        }
+
         if (!priceId) {
           const stripeProduct = await stripe.products.create({
             name: item.product_name,
