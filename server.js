@@ -82,12 +82,13 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
   : ['http://localhost:3000'];
 
-// Patterns pour Vercel et localhost
+// Patterns pour Vercel, localhost et domaine production
 const allowedPatterns = [
  
   /^https:\/\/kafe-stockholm.*\.vercel\.app$/,
   /^https:\/\/[a-z0-9-]+\.vercel\.app$/,
   /^https:\/\/[a-z0-9-]+-[a-z0-9-]+\.vercel\.app$/,
+  /^https:\/\/(www\.)?kafe-stockholm\.com$/,  // Production : kafe-stockholm.com et www.kafe-stockholm.com
   /^http:\/\/localhost:\d+$/,
   /^http:\/\/127\.0\.0\.1:\d+$/,
 ];
