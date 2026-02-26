@@ -37,7 +37,7 @@ router.get('/', requireAdmin, async (req, res, next) => {
 
     params.push(limitNum, offset);
     const result = await db.query(
-      `SELECT u.id, u.email, u.name, u.role, u.phone, u.created_at, u.last_login_at,
+      `SELECT u.id, u.email, u.name, u.role, u.phone, u.created_at, u.last_login_at, u.image as avatar_url,
               (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) as order_count,
               (SELECT COALESCE(SUM(o.total_amount), 0) FROM orders o WHERE o.user_id = u.id AND o.payment_status = 'paid') as total_spent
        FROM users u

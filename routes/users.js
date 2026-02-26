@@ -11,17 +11,29 @@ const router = express.Router();
 // ============================================
 router.get('/me', requireAuth, async (req, res) => {
   try {
-    const user = await queryOne(
-      `SELECT id, email, firstname, lastname, phone, role, 
-              email_verified, avatar_url, created_at, last_login
+    const row = await queryOne(
+      `SELECT id, email, name, phone, role, 
+              email_verified, image, created_at, last_login_at, metadata
        FROM users WHERE id = $1`,
       [req.userId]
     );
 
-    if (!user) {
+    if (!row) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
+    const metadata = row.metadata || {};
+    const nameParts = (row.name || '').trim().split(/\s+/);
+    const user = {
+      ...row,
+      firstname: metadata.firstname ?? nameParts[0] ?? '',
+      lastname: metadata.lastname ?? nameParts.slice(1).join(' ') ?? '',
+      avatar_url: row.image,
+      last_login: row.last_login_at,
+    };
+    delete user.metadata;
+    delete user.image;
+    delete user.last_login_at;
     res.json({ user });
   } catch (error) {
     console.error('Erreur get user:', error);
@@ -32,17 +44,29 @@ router.get('/me', requireAuth, async (req, res) => {
 // Alias pour compatibilité
 router.get('/profile', requireAuth, async (req, res) => {
   try {
-    const user = await queryOne(
-      `SELECT id, email, firstname, lastname, phone, role, 
-              email_verified, avatar_url, created_at, last_login
+    const row = await queryOne(
+      `SELECT id, email, name, phone, role, 
+              email_verified, image, created_at, last_login_at, metadata
        FROM users WHERE id = $1`,
       [req.userId]
     );
 
-    if (!user) {
+    if (!row) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
+    const metadata = row.metadata || {};
+    const nameParts = (row.name || '').trim().split(/\s+/);
+    const user = {
+      ...row,
+      firstname: metadata.firstname ?? nameParts[0] ?? '',
+      lastname: metadata.lastname ?? nameParts.slice(1).join(' ') ?? '',
+      avatar_url: row.image,
+      last_login: row.last_login_at,
+    };
+    delete user.metadata;
+    delete user.image;
+    delete user.last_login_at;
     res.json(user);
   } catch (error) {
     console.error('Erreur get profile:', error);
@@ -55,7 +79,7 @@ router.get('/profile', requireAuth, async (req, res) => {
 // ============================================
 router.put('/me', requireAuth, async (req, res) => {
   try {
-    const { firstname, lastname, phone } = req.body;
+    const { firstname, lastname, phone, avatar_url } = req.body;
 
     if (!firstname || !lastname) {
       return res.status(400).json({ 
@@ -63,17 +87,41 @@ router.put('/me', requireAuth, async (req, res) => {
       });
     }
 
-    await query(
-      `UPDATE users 
-       SET firstname = $1, lastname = $2, phone = $3, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4`,
-      [firstname, lastname, phone || null, req.userId]
-    );
+    const name = `${String(firstname).trim()} ${String(lastname).trim()}`.trim();
+    const pool = getPool();
 
-    const updatedUser = await queryOne(
-      'SELECT id, email, firstname, lastname, phone, role FROM users WHERE id = $1',
+    if (avatar_url !== undefined) {
+      await pool.query(
+        `UPDATE users SET name = $1, phone = $2, image = $3,
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('firstname', $4::text, 'lastname', $5::text),
+         updated_at = CURRENT_TIMESTAMP WHERE id = $6`,
+        [name, phone || null, avatar_url || null, firstname, lastname, req.userId]
+      );
+    } else {
+      await pool.query(
+        `UPDATE users SET name = $1, phone = $2,
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('firstname', $3::text, 'lastname', $4::text),
+         updated_at = CURRENT_TIMESTAMP WHERE id = $5`,
+        [name, phone || null, firstname, lastname, req.userId]
+      );
+    }
+
+    const row = await queryOne(
+      'SELECT id, email, name, phone, role, image, created_at, last_login_at, metadata FROM users WHERE id = $1',
       [req.userId]
     );
+    const metadata = row.metadata || {};
+    const nameParts = (row.name || '').trim().split(/\s+/);
+    const updatedUser = {
+      ...row,
+      firstname: metadata.firstname ?? nameParts[0] ?? '',
+      lastname: metadata.lastname ?? nameParts.slice(1).join(' ') ?? '',
+      avatar_url: row.image,
+      last_login: row.last_login_at,
+    };
+    delete updatedUser.metadata;
+    delete updatedUser.image;
+    delete updatedUser.last_login_at;
 
     res.json({
       message: 'Profil mis à jour avec succès',
@@ -85,10 +133,9 @@ router.put('/me', requireAuth, async (req, res) => {
   }
 });
 
-// Alias pour compatibilité
 router.put('/profile', requireAuth, async (req, res) => {
   try {
-    const { firstname, lastname, phone } = req.body;
+    const { firstname, lastname, phone, avatar_url } = req.body;
 
     if (!firstname || !lastname) {
       return res.status(400).json({ 
@@ -96,17 +143,41 @@ router.put('/profile', requireAuth, async (req, res) => {
       });
     }
 
-    await query(
-      `UPDATE users 
-       SET firstname = $1, lastname = $2, phone = $3, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4`,
-      [firstname, lastname, phone || null, req.userId]
-    );
+    const name = `${String(firstname).trim()} ${String(lastname).trim()}`.trim();
+    const pool = getPool();
 
-    const updatedUser = await queryOne(
-      'SELECT id, email, firstname, lastname, phone, role FROM users WHERE id = $1',
+    if (avatar_url !== undefined) {
+      await pool.query(
+        `UPDATE users SET name = $1, phone = $2, image = $3,
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('firstname', $4::text, 'lastname', $5::text),
+         updated_at = CURRENT_TIMESTAMP WHERE id = $6`,
+        [name, phone || null, avatar_url || null, firstname, lastname, req.userId]
+      );
+    } else {
+      await pool.query(
+        `UPDATE users SET name = $1, phone = $2,
+         metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('firstname', $3::text, 'lastname', $4::text),
+         updated_at = CURRENT_TIMESTAMP WHERE id = $5`,
+        [name, phone || null, firstname, lastname, req.userId]
+      );
+    }
+
+    const row = await queryOne(
+      'SELECT id, email, name, phone, role, image, created_at, last_login_at, metadata FROM users WHERE id = $1',
       [req.userId]
     );
+    const metadata = row.metadata || {};
+    const nameParts = (row.name || '').trim().split(/\s+/);
+    const updatedUser = {
+      ...row,
+      firstname: metadata.firstname ?? nameParts[0] ?? '',
+      lastname: metadata.lastname ?? nameParts.slice(1).join(' ') ?? '',
+      avatar_url: row.image,
+      last_login: row.last_login_at,
+    };
+    delete updatedUser.metadata;
+    delete updatedUser.image;
+    delete updatedUser.last_login_at;
 
     res.json({
       message: 'Profil mis à jour avec succès',
@@ -342,7 +413,7 @@ router.get('/messages', requireAuth, async (req, res) => {
               'id', cmr.id,
               'reply_text', cmr.reply_text,
               'created_at', cmr.created_at,
-              'admin_name', u.firstname || ' ' || u.lastname
+              'admin_name', u.name
             )
             ORDER BY cmr.created_at ASC
           )
@@ -373,12 +444,22 @@ router.get('/messages', requireAuth, async (req, res) => {
 // ============================================
 router.get('/', requireAdmin, async (req, res) => {
   try {
-    const users = await query(
-      `SELECT id, email, firstname, lastname, phone, role, 
-              is_active, email_verified, created_at, last_login
+    const rows = await query(
+      `SELECT id, email, name, phone, role, 
+              is_active, email_verified, created_at, last_login_at, metadata
        FROM users
        ORDER BY created_at DESC`
     );
+    const users = rows.map((row) => {
+      const metadata = row.metadata || {};
+      const nameParts = (row.name || '').trim().split(/\s+/);
+      return {
+        ...row,
+        firstname: metadata.firstname ?? nameParts[0] ?? '',
+        lastname: metadata.lastname ?? nameParts.slice(1).join(' ') ?? '',
+        last_login: row.last_login_at,
+      };
+    }).map(({ metadata, last_login_at, ...u }) => u);
 
     res.json({ users });
   } catch (error) {
@@ -392,17 +473,27 @@ router.get('/', requireAdmin, async (req, res) => {
 // ============================================
 router.get('/:id', requireAdmin, async (req, res) => {
   try {
-    const user = await queryOne(
-      `SELECT id, email, firstname, lastname, phone, role, 
-              is_active, email_verified, created_at, last_login
+    const row = await queryOne(
+      `SELECT id, email, name, phone, role, 
+              is_active, email_verified, created_at, last_login_at, metadata
        FROM users WHERE id = $1`,
       [req.params.id]
     );
 
-    if (!user) {
+    if (!row) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
+    const metadata = row.metadata || {};
+    const nameParts = (row.name || '').trim().split(/\s+/);
+    const user = {
+      ...row,
+      firstname: metadata.firstname ?? nameParts[0] ?? '',
+      lastname: metadata.lastname ?? nameParts.slice(1).join(' ') ?? '',
+      last_login: row.last_login_at,
+    };
+    delete user.metadata;
+    delete user.last_login_at;
     res.json(user);
   } catch (error) {
     console.error('Erreur get user by id:', error);
